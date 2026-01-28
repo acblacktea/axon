@@ -1,0 +1,14 @@
+exchanges:
+  deribit:
+    env: testnet  # testnet / production
+    api_key: "8W9wYEn_"
+    api_secret: "lPkxAqgVifyJsQCIAOK-dses39KJeM-lmN_oSeKPzC0"
+
+reconciliation:
+  enabled: true
+  interval_seconds: 300
+
+websocket:
+  heartbeat_interval_seconds: 10
+  reconnect_delay_seconds: 1
+  max_reconnect_delay_seconds: 60
