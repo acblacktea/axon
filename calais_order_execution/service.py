@@ -117,17 +117,23 @@ class CalaisExecutionService:
         side: OrderSide,
         amount: float,
         internal_order_id: str,
-        max_attempts: int = 20,
-        poll_interval: float = 1,
+        max_attempt_second: float = 60,
+        poll_interval: float = 0.2,
     ) -> float:
         """Chase maker fill by continuously placing limit orders at best price.
 
-        Returns:
-            Total filled amount. May be less than requested if max_attempts reached.
-        """
-        current_order: Order | None = None
+        If time runs out and order is not fully filled, remaining amount will be
+        filled with a taker (market) order.
 
-        for _ in range(max_attempts):
+        Returns:
+            Total filled amount.
+        """
+        import time
+
+        current_order: Order | None = None
+        start_time = time.time()
+
+        while time.time() - start_time < max_attempt_second:
             ticker = await self._ems.get_ticker(exchange, instrument)
             if side == OrderSide.BUY:
                 #price = ticker.best_bid_price
@@ -193,7 +199,8 @@ class CalaisExecutionService:
 
             await asyncio.sleep(poll_interval)
 
-        # Max attempts reached, cancel order and get final status
+        # Time reached, cancel maker order and get final status
+        filled = 0.0
         if current_order:
             await self._ems.cancel_order(exchange, current_order.order_id)
             logger.info(f"Cancelled unfilled maker order: {current_order.order_id}")
@@ -201,8 +208,28 @@ class CalaisExecutionService:
             if final_order:
                 current_order = final_order
                 await self._oms.add_order(current_order)
-        filled = current_order.filled_amount if current_order else 0.0
-        logger.info(f"Maker chase ended: filled {filled}/{amount} after {max_attempts} attempts")
+            filled = current_order.filled_amount if current_order else 0.0
+
+        # Place taker order for remaining amount
+        remaining = amount - filled
+        if remaining > 1e-12:
+            logger.info(f"Maker chase timeout, placing taker order for remaining {remaining}")
+            try:
+                taker_request = OrderRequest(
+                    instrument=instrument,
+                    side=side,
+                    amount=remaining,
+                    order_type=OrderType.MARKET,
+                    internal_order_id=internal_order_id,
+                )
+                taker_order = await self._ems.place_order(exchange, taker_request)
+                await self._oms.add_order(taker_order)
+                logger.info(f"Taker order placed: {taker_order.order_id}")
+                filled += remaining
+            except Exception as e:
+                logger.error(f"Failed to place taker order for remaining amount: {e}")
+
+        logger.info(f"Maker chase ended: filled {filled}/{amount} after {max_attempt_second}s")
         return filled
 
     def place_order_hedge_deribit_options(
@@ -213,7 +240,7 @@ class CalaisExecutionService:
         side2: OrderSide,
         amount: float,
         batch_amount: float,
-        chase_maker_max_attempts_per_batch: int = 20,
+        chase_maker_max_attempt_second: float = 60,
     ) -> str:
         """Place a hedge order for Deribit options (async, non-blocking).
 
@@ -240,7 +267,7 @@ class CalaisExecutionService:
                 side2=side2,
                 amount=amount,
                 batch_amount=batch_amount,
-                chase_maker_max_attempts_per_batch=chase_maker_max_attempts_per_batch,
+                chase_maker_max_attempt_second=chase_maker_max_attempt_second,
             )
         )
 
@@ -255,25 +282,18 @@ class CalaisExecutionService:
         side2: OrderSide,
         amount: float,
         batch_amount: float,
-        chase_maker_max_attempts_per_batch: int,
-        max_duration_seconds: float = 120.0,
+        chase_maker_max_attempt_second: float,
     ) -> None:
-        """Run the hedge logic (background task)."""
-        import time
+        """Run the hedge logic (background task).
 
+        Guaranteed to fill all amount since _chase_maker_fill will use taker
+        orders for any remaining amount after timeout.
+        """
         exchange = "deribit"
         remaining_amount = amount
-        start_time = time.time()
 
         try:
             while remaining_amount > 1e-12:
-                if time.time() - start_time > max_duration_seconds:
-                    logger.warning(
-                        f"Hedge {internal_order_id} timeout after {max_duration_seconds}s, "
-                        f"remaining: {remaining_amount}"
-                    )
-                    break
-
                 current_batch = min(batch_amount, remaining_amount)
 
                 logger.info(f"Batch: {side1.value} {current_batch} {symbol1} (maker)")
@@ -283,7 +303,7 @@ class CalaisExecutionService:
                     side=side1,
                     amount=current_batch,
                     internal_order_id=internal_order_id,
-                    max_attempts=chase_maker_max_attempts_per_batch,
+                    max_attempt_second=chase_maker_max_attempt_second,
                 )
 
                 if maker_filled > 0:
