@@ -7,6 +7,7 @@ from typing import Callable
 from calais_order_execution.config import Config
 from calais_order_execution.ems.ems_service import EMSService
 from calais_order_execution.models import Order, OrderRequest, OrderSide, OrderStatus, OrderType, Ticker
+from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.oms.oms_service import OMSService
 from calais_order_execution.repository import OrderRepository
 from calais_order_execution.util.logging import get_logger
@@ -69,6 +70,8 @@ class CalaisExecutionService:
             Exception: If order placement fails.
         """
         order = await self._ems.place_order(exchange, request)
+        if request.strategy_id:
+            order.strategy_id = request.strategy_id
         await self._oms.add_order(order)
         return order
 
@@ -103,6 +106,55 @@ class CalaisExecutionService:
     def unregister_order_update_callback(self, callback: Callable[[Order], None]) -> None:
         """Unregister an order update callback."""
         self._oms.unregister_order_update_callback(callback)
+
+    async def modify_order(
+        self,
+        exchange: str,
+        order_id: str,
+        amount: float | None = None,
+        price: float | None = None,
+    ) -> Order:
+        """Modify an existing order."""
+        return await self._ems.modify_order(exchange, order_id, amount=amount, price=price)
+
+    @property
+    def ems(self):
+        """Access EMS service."""
+        return self._ems
+
+    @property
+    def oms(self):
+        """Access OMS service."""
+        return self._oms
+
+    # ============= Portfolio Interface =============
+
+    def get_account_summary(self, exchange: str, currency: str = "BTC") -> AccountSummary | None:
+        """Get account summary from local cache."""
+        return self._oms.get_account(currency)
+
+    def get_positions(self, exchange: str, currency: str | None = None) -> list[Position]:
+        """Get positions from local cache."""
+        positions = self._oms.get_all_positions()
+        if currency:
+            positions = [p for p in positions if p.instrument.startswith(currency)]
+        return positions
+
+    def register_account_update_callback(self, callback: Callable[[AccountSummary], None]) -> None:
+        """Register a callback for account summary updates."""
+        self._oms.register_account_update_callback(callback)
+
+    def unregister_account_update_callback(self, callback: Callable[[AccountSummary], None]) -> None:
+        """Unregister an account summary callback."""
+        self._oms.unregister_account_update_callback(callback)
+
+    def register_position_update_callback(self, callback: Callable[[list[Position]], None]) -> None:
+        """Register a callback for position updates."""
+        self._oms.register_position_update_callback(callback)
+
+    def unregister_position_update_callback(self, callback: Callable[[list[Position]], None]) -> None:
+        """Unregister a position callback."""
+        self._oms.unregister_position_update_callback(callback)
 
     # ============= Hedge Algorithms =============
 

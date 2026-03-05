@@ -8,6 +8,7 @@ setup(
         "aiohttp>=3.9.0",
         "websockets>=12.0",
         "pyyaml>=6.0",
+        "pyzmq>=25.0.0",
     ],
     python_requires=">=3.10",
     author="Yang Liu",

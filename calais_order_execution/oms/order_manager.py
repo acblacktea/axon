@@ -62,6 +62,10 @@ class OrderManager:
                 )
                 return
 
+            # Preserve strategy_id from existing order if incoming doesn't have one
+            if not order.strategy_id and existing and existing.strategy_id:
+                order.strategy_id = existing.strategy_id
+
             self._order_cache[order.order_id] = order
             await self._repository.update(order)
             logger.info(

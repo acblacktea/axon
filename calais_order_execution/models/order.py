@@ -72,6 +72,7 @@ class OrderRequest:
     post_only: bool = False
     reject_post_only: bool = False
     internal_order_id: str = field(default_factory=_generate_internal_id)
+    strategy_id: Optional[str] = None
 
     def __post_init__(self):
         if self.order_type == OrderType.LIMIT and self.price is None:
@@ -97,6 +98,7 @@ class Order:
     liquidity: Liquidity = Liquidity.MAKER
     post_only: bool = False
     reject_post_only: bool = False
+    strategy_id: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
 

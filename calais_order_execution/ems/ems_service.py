@@ -4,6 +4,7 @@ from calais_order_execution.config import Config
 from calais_order_execution.ems.base import BaseEMS
 from calais_order_execution.ems.deribit import DeribitEMS
 from calais_order_execution.models import Order, OrderRequest, Ticker
+from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.util.logging import get_logger
 
 logger = get_logger(__name__)
@@ -88,6 +89,18 @@ class EMSService:
         if exchange not in self._ems:
             raise ValueError(f"Unsupported exchange: {exchange}")
         return await self._ems[exchange].modify_order(order_id, amount=amount, price=price)
+
+    async def get_account_summary(self, exchange: str, currency: str = "BTC") -> AccountSummary:
+        """Get account summary for a currency."""
+        if exchange not in self._ems:
+            raise ValueError(f"Unsupported exchange: {exchange}")
+        return await self._ems[exchange].get_account_summary(currency)
+
+    async def get_positions(self, exchange: str, currency: str = "BTC", kind: str = "option") -> list[Position]:
+        """Get positions for a currency and kind."""
+        if exchange not in self._ems:
+            raise ValueError(f"Unsupported exchange: {exchange}")
+        return await self._ems[exchange].get_positions(currency, kind)
 
     async def __aenter__(self) -> "EMSService":
         await self.start()

@@ -41,12 +41,32 @@ class WebSocketConfig:
 
 
 @dataclass
+class PortfolioConfig:
+    """Configuration for portfolio (balance + positions) tracking."""
+
+    currencies: list[str] = field(default_factory=lambda: ["BTC"])
+    position_refresh_interval_seconds: int = 10
+
+
+@dataclass
+class ZMQConfig:
+    """Configuration for ZMQ transport."""
+
+    router_endpoint: str = "tcp://*:5555"
+    pub_endpoint: str = "tcp://*:5556"
+    router_connect: str = "tcp://localhost:5555"
+    pub_connect: str = "tcp://localhost:5556"
+
+
+@dataclass
 class Config:
     """Main configuration class."""
 
     exchanges: dict[str, ExchangeConfig] = field(default_factory=dict)
     reconciliation: ReconciliationConfig = field(default_factory=ReconciliationConfig)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
+    portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
+    zmq: ZMQConfig = field(default_factory=ZMQConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -90,8 +110,24 @@ def load_config(path: str | Path) -> Config:
         retry_delay_seconds=ws_data.get("retry_delay_seconds", 1.0),
     )
 
+    zmq_data = raw_config.get("zmq", {})
+    zmq = ZMQConfig(
+        router_endpoint=zmq_data.get("router_endpoint", "tcp://*:5555"),
+        pub_endpoint=zmq_data.get("pub_endpoint", "tcp://*:5556"),
+        router_connect=zmq_data.get("router_connect", "tcp://localhost:5555"),
+        pub_connect=zmq_data.get("pub_connect", "tcp://localhost:5556"),
+    )
+
+    portfolio_data = raw_config.get("portfolio", {})
+    portfolio = PortfolioConfig(
+        currencies=portfolio_data.get("currencies", ["BTC"]),
+        position_refresh_interval_seconds=portfolio_data.get("position_refresh_interval_seconds", 10),
+    )
+
     return Config(
         exchanges=exchanges,
         reconciliation=reconciliation,
         websocket=websocket,
+        portfolio=portfolio,
+        zmq=zmq,
     )

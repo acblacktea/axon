@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 
 from calais_order_execution.models import Order, OrderRequest
+from calais_order_execution.models.portfolio import AccountSummary, Position
 
 
 class BaseEMS(ABC):
@@ -104,6 +105,14 @@ class BaseEMS(ABC):
             Exception: If modification fails.
         """
         ...
+
+    async def get_account_summary(self, currency: str = "BTC") -> AccountSummary:
+        """Get account summary for a currency. Override in subclass."""
+        raise NotImplementedError
+
+    async def get_positions(self, currency: str = "BTC", kind: str = "option") -> list[Position]:
+        """Get positions for a currency and kind. Override in subclass."""
+        raise NotImplementedError
 
     async def __aenter__(self) -> "BaseEMS":
         await self.start()

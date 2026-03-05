@@ -7,6 +7,7 @@ from typing import Any
 from calais_order_execution.config import ExchangeConfig
 from calais_order_execution.ems.base import BaseEMS
 from calais_order_execution.models import Order, OrderRequest, OrderSide, OrderStatus, OrderType, Ticker
+from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.util import AsyncHttpClient
 from calais_order_execution.util.logging import get_logger
 
@@ -196,6 +197,68 @@ class DeribitEMS(BaseEMS):
             best_ask_amount=result.get("best_ask_amount") or 0,
             last_price=result.get("last_price"),
             mark_price=result.get("mark_price"),
+        )
+
+    async def get_account_summary(self, currency: str = "BTC") -> AccountSummary:
+        """Get account summary for a currency."""
+        result = await self._private_request(
+            "private/get_account_summary", {"currency": currency}
+        )
+        return self._parse_account_summary(result)
+
+    async def get_positions(self, currency: str = "BTC", kind: str = "option") -> list[Position]:
+        """Get positions for a currency and kind."""
+        result = await self._private_request(
+            "private/get_positions", {"currency": currency, "kind": kind}
+        )
+        return [self._parse_position(p) for p in result]
+
+    def _parse_account_summary(self, data: dict[str, Any]) -> AccountSummary:
+        """Parse Deribit account summary response."""
+        return AccountSummary(
+            currency=data["currency"],
+            equity=data.get("equity", 0),
+            balance=data.get("balance", 0),
+            available_funds=data.get("available_funds", 0),
+            initial_margin=data.get("initial_margin", 0),
+            maintenance_margin=data.get("maintenance_margin", 0),
+            margin_balance=data.get("margin_balance", 0),
+            delta_total=data.get("delta_total", 0),
+            options_delta=data.get("options_delta", 0),
+            options_gamma=data.get("options_gamma", 0),
+            options_vega=data.get("options_vega", 0),
+            options_theta=data.get("options_theta", 0),
+            futures_pl=data.get("futures_pl", 0),
+            options_pl=data.get("options_pl", 0),
+            total_pl=data.get("total_pl", 0),
+            timestamp=datetime.fromtimestamp(data["creation_timestamp"] / 1000)
+            if "creation_timestamp" in data
+            else datetime.utcnow(),
+        )
+
+    def _parse_position(self, data: dict[str, Any]) -> Position:
+        """Parse Deribit position response."""
+        return Position(
+            instrument=data["instrument_name"],
+            exchange="deribit",
+            kind=data.get("kind", "option"),
+            direction=data.get("direction", "zero"),
+            size=data.get("size", 0),
+            average_price=data.get("average_price", 0),
+            mark_price=data.get("mark_price", 0),
+            index_price=data.get("index_price", 0),
+            initial_margin=data.get("initial_margin", 0),
+            maintenance_margin=data.get("maintenance_margin", 0),
+            delta=data.get("delta", 0),
+            gamma=data.get("gamma", 0),
+            vega=data.get("vega", 0),
+            theta=data.get("theta", 0),
+            total_profit_loss=data.get("total_profit_loss", 0),
+            floating_profit_loss=data.get("floating_profit_loss", 0),
+            realized_profit_loss=data.get("realized_profit_loss", 0),
+            timestamp=datetime.fromtimestamp(data["creation_timestamp"] / 1000)
+            if "creation_timestamp" in data
+            else datetime.utcnow(),
         )
 
     def _parse_order(self, data: dict[str, Any]) -> Order:
