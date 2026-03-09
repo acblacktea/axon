@@ -45,6 +45,18 @@ class OrderRepository(ABC):
         ...
 
     @abstractmethod
+    async def get_by_strategy_id(self, strategy_id: str) -> list[Order]:
+        """Get all orders for a strategy.
+
+        Args:
+            strategy_id: Strategy ID to filter by.
+
+        Returns:
+            List of orders for the strategy.
+        """
+        ...
+
+    @abstractmethod
     async def get_all(self) -> list[Order]:
         """Get all orders.
 

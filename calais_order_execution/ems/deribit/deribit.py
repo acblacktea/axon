@@ -217,6 +217,7 @@ class DeribitEMS(BaseEMS):
         """Parse Deribit account summary response."""
         return AccountSummary(
             currency=data["currency"],
+            exchange="deribit",
             equity=data.get("equity", 0),
             balance=data.get("balance", 0),
             available_funds=data.get("available_funds", 0),

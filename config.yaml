@@ -12,3 +12,13 @@ websocket:
   heartbeat_interval_seconds: 10
   reconnect_delay_seconds: 1
   max_reconnect_delay_seconds: 60
+
+portfolio:
+  currencies: ["BTC"]
+  position_refresh_interval_seconds: 1
+
+zmq:
+  router_endpoint: "tcp://*:5555"
+  pub_endpoint: "tcp://*:5556"
+  router_connect: "tcp://localhost:5555"
+  pub_connect: "tcp://localhost:5556"

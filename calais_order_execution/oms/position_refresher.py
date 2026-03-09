@@ -77,6 +77,7 @@ class PositionRefresher:
             except Exception as e:
                 logger.error(f"Failed to fetch positions for {currency}: {e}")
 
+        exchange = self._ems.exchange_name
+        await self._portfolio_manager.update_positions(exchange, all_positions)
         if all_positions:
-            await self._portfolio_manager.update_positions(all_positions)
-            logger.debug(f"Refreshed {len(all_positions)} positions")
+            logger.debug(f"Refreshed {len(all_positions)} positions for {exchange}")

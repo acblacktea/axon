@@ -12,6 +12,8 @@ from calais_order_execution.oms.portfolio_manager import PortfolioManager
 from calais_order_execution.oms.position_refresher import PositionRefresher
 from calais_order_execution.oms.reconciler import OrderReconciler
 from calais_order_execution.repository import InMemoryOrderRepository, OrderRepository
+from calais_order_execution.repository.account_base import AccountRepository
+from calais_order_execution.repository.position_base import PositionRepository
 from calais_order_execution.util import WebSocketBase
 from calais_order_execution.util.logging import get_logger
 
@@ -26,6 +28,8 @@ class OMSService:
         config: Config,
         ems_service: EMSService,
         repository: OrderRepository | None = None,
+        account_repository: AccountRepository | None = None,
+        position_repository: PositionRepository | None = None,
     ):
         """Initialize OMS service.
 
@@ -33,6 +37,8 @@ class OMSService:
             config: Service configuration.
             ems_service: EMS service for reconciliation.
             repository: Order repository. Uses InMemoryOrderRepository if not provided.
+            account_repository: Account repository. Uses InMemoryAccountRepository if not provided.
+            position_repository: Position repository. Uses InMemoryPositionRepository if not provided.
         """
         self._config = config
         self._ems_service = ems_service
@@ -42,7 +48,10 @@ class OMSService:
         self._reconcilers: dict[str, OrderReconciler] = {}
         self._position_refreshers: dict[str, PositionRefresher] = {}
         self._order_manager = OrderManager(self._repository)
-        self._portfolio_manager = PortfolioManager()
+        self._portfolio_manager = PortfolioManager(
+            account_repository=account_repository,
+            position_repository=position_repository,
+        )
 
         self._init_clients()
 
@@ -147,13 +156,17 @@ class OMSService:
         """Get the portfolio manager."""
         return self._portfolio_manager
 
-    def get_account(self, currency: str) -> AccountSummary | None:
-        """Get account summary by currency from cache."""
-        return self._portfolio_manager.get_account(currency)
+    def get_account(self, exchange: str, currency: str) -> AccountSummary | None:
+        """Get account summary by exchange and currency from cache."""
+        return self._portfolio_manager.get_account(exchange, currency)
 
     def get_all_positions(self) -> list[Position]:
         """Get all positions from cache."""
         return self._portfolio_manager.get_all_positions()
+
+    def get_positions_by_exchange(self, exchange: str) -> list[Position]:
+        """Get all positions for an exchange from cache."""
+        return self._portfolio_manager.get_positions_by_exchange(exchange)
 
     def register_account_update_callback(self, callback: Callable[[AccountSummary], None]) -> None:
         """Register a callback for account summary updates."""

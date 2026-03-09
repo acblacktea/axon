@@ -1,6 +1,6 @@
 """Calais Order Execution System - EMS and OMS for crypto trading."""
 
-from calais_order_execution.config import Config, ExchangeConfig, PortfolioConfig, ZMQConfig, load_config
+from calais_order_execution.config import Config, DatabaseConfig, ExchangeConfig, PortfolioConfig, ZMQConfig, load_config
 from calais_order_execution.models import Order, OrderRequest, OrderSide, OrderStatus, OrderType, AccountSummary, Position
 from calais_order_execution.service import CalaisExecutionService
 
@@ -11,6 +11,7 @@ __all__ = [
     "CalaisExecutionService",
     # Config
     "Config",
+    "DatabaseConfig",
     "ExchangeConfig",
     "PortfolioConfig",
     "ZMQConfig",

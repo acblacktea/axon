@@ -59,6 +59,15 @@ class ZMQConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    """Configuration for PostgreSQL database."""
+
+    dsn: str = "postgresql://localhost:5432/calais"
+    pool_min: int = 2
+    pool_max: int = 10
+
+
+@dataclass
 class Config:
     """Main configuration class."""
 
@@ -67,6 +76,7 @@ class Config:
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     zmq: ZMQConfig = field(default_factory=ZMQConfig)
+    database: DatabaseConfig | None = None
 
 
 def load_config(path: str | Path) -> Config:
@@ -124,10 +134,20 @@ def load_config(path: str | Path) -> Config:
         position_refresh_interval_seconds=portfolio_data.get("position_refresh_interval_seconds", 10),
     )
 
+    db_data = raw_config.get("database")
+    database = None
+    if db_data:
+        database = DatabaseConfig(
+            dsn=db_data.get("dsn", "postgresql://localhost:5432/calais"),
+            pool_min=db_data.get("pool_min", 2),
+            pool_max=db_data.get("pool_max", 10),
+        )
+
     return Config(
         exchanges=exchanges,
         reconciliation=reconciliation,
         websocket=websocket,
         portfolio=portfolio,
         zmq=zmq,
+        database=database,
     )

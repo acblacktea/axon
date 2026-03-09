@@ -1,161 +1,108 @@
 #!/usr/bin/env python3
-"""Demo script for Calais Execution Service.
+"""Quick demo - runs engine + strategy in a single process (for local testing).
 
-Mode 1 (in-process): python examples/demo.py --mode local
-Mode 2 (ZMQ client): python examples/demo.py --mode zmq
-
-For ZMQ mode, start the engine first:
-    python -m calais_order_execution.engine --config config.yaml
+For multi-process mode, use the separate scripts:
+    Terminal 1:  python examples/run_engine.py --config config.yaml
+    Terminal 2:  python examples/strategy_one.py
+    Terminal 3:  python examples/strategy_two.py
 """
 
 import asyncio
-import json
-import os
-import sys
-from dataclasses import asdict
-from datetime import datetime
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import signal
 
 from calais_order_execution import CalaisExecutionService, load_config
-from calais_order_execution.models import Order, OrderRequest, OrderSide, OrderType
-from calais_order_execution.util.logging import init_logging, get_logger
+from calais_order_execution.models import (
+    AccountSummary,
+    Order,
+    OrderRequest,
+    OrderSide,
+    OrderType,
+    Position,
+)
+from calais_order_execution.util.logging import get_logger, init_logging
 
-init_logging()
+init_logging(console_output=True)
 logger = get_logger(__name__)
 
-
-class Strategy:
-    """Example strategy that works with both CalaisExecutionService and StrategyClient."""
-
-    def __init__(self, client):
-        """Initialize strategy.
-
-        Args:
-            client: CalaisExecutionService or StrategyClient instance.
-        """
-        self._client = client
-        self._client.register_order_update_callback(self.on_order_update)
-
-    def on_order_update(self, order: Order) -> None:
-        """Handle order updates."""
-        order_dict = asdict(order)
-        for key, value in order_dict.items():
-            if hasattr(value, "value"):
-                order_dict[key] = value.value
-            elif isinstance(value, datetime):
-                order_dict[key] = value.isoformat()
-        logger.info(f"[STRATEGY] Order Update: {json.dumps(order_dict, indent=2)}")
-
-    async def place_order(
-        self,
-        exchange: str,
-        instrument: str,
-        side: OrderSide,
-        amount: float,
-        price: float,
-        post_only: bool = False,
-    ) -> Order:
-        """Place an order through the execution service."""
-        request = OrderRequest(
-            instrument=instrument,
-            side=side,
-            amount=amount,
-            order_type=OrderType.LIMIT,
-            price=price,
-            post_only=post_only,
-        )
-        return await self._client.place_order(exchange, request)
-
-    async def cancel_order(self, exchange: str, order_id: str) -> bool:
-        """Cancel an order."""
-        return await self._client.cancel_order(exchange, order_id)
+EXCHANGE = "deribit"
 
 
-async def run_local():
-    """Run strategy in-process (original mode)."""
+def on_order_update(order: Order) -> None:
+    logger.info(
+        f"[ORDER] {order.instrument} {order.side.value} "
+        f"status={order.status.value} filled={order.filled_amount}/{order.amount}"
+    )
+
+
+def on_account_update(summary: AccountSummary) -> None:
+    logger.info(
+        f"[ACCOUNT] {summary.currency}: equity={summary.equity:.6f} "
+        f"balance={summary.balance:.6f}"
+    )
+
+
+def on_position_update(positions: list[Position]) -> None:
+    logger.info(f"[POSITIONS] {len(positions)} positions")
+    for p in positions[:3]:
+        logger.info(f"  {p.instrument}: size={p.size} delta={p.delta:.4f}")
+
+
+async def main() -> None:
     config = load_config("config.yaml")
     service = CalaisExecutionService(config)
-    strategy = Strategy(service)
+
+    service.register_order_update_callback(on_order_update)
+    service.register_account_update_callback(on_account_update)
+    service.register_position_update_callback(on_position_update)
+
+    stop_event = asyncio.Event()
+
+    def _signal_handler():
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, _signal_handler)
 
     try:
         await service.start()
-        logger.info("Service started (local mode). Press Ctrl+C to stop.")
+        logger.info("Service started (single-process mode). Ctrl+C to stop.")
 
-        # Example: run hedge using client-side algorithm
-        from calais_order_execution.client.algorithms import hedge_deribit_options
+        # Query portfolio
+        summary = service.get_account_summary(EXCHANGE, "BTC")
+        if summary:
+            logger.info(f"Initial equity: {summary.equity:.6f} BTC")
 
-        internal_id = await hedge_deribit_options(
-            client=service,
-            symbol1="BTC-30JAN26-100000-C",
-            symbol2="BTC-30JAN26-100000-P",
-            side1=OrderSide.BUY,
-            side2=OrderSide.SELL,
-            amount=1,
-            batch_amount=0.1,
+        positions = service.get_positions(EXCHANGE)
+        logger.info(f"Open positions: {len(positions)}")
+
+        # Place a test limit order far below market
+        ticker = await service.get_ticker(EXCHANGE, "BTC-PERPETUAL")
+        test_price = round(ticker.best_bid_price * 0.90, 1)
+
+        request = OrderRequest(
+            instrument="BTC-PERPETUAL",
+            side=OrderSide.BUY,
+            amount=0.001,
+            order_type=OrderType.LIMIT,
+            price=test_price,
+            label="demo_test",
         )
-        logger.info(f"Hedge started with internal_id: {internal_id}")
+        order = await service.place_order(EXCHANGE, request)
+        logger.info(f"Placed order: {order.order_id} @ {test_price}")
 
-        while True:
-            await asyncio.sleep(10)
+        # Wait a bit then cancel
+        await asyncio.sleep(5)
+        await service.cancel_order(EXCHANGE, order.order_id)
+        logger.info(f"Cancelled order: {order.order_id}")
 
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
+        # Keep running for callbacks
+        await stop_event.wait()
+
     finally:
         await service.stop()
-
-
-async def run_zmq():
-    """Run strategy as ZMQ client (multi-process mode).
-
-    Requires engine to be running:
-        python -m calais_order_execution.engine --config config.yaml
-    """
-    from calais_order_execution.client import StrategyClient
-    from calais_order_execution.config import ZMQConfig
-
-    zmq_config = ZMQConfig()
-    client = StrategyClient(zmq_config, strategy_id="demo_strategy")
-
-    try:
-        await client.connect()
-        strategy = Strategy(client)
-        logger.info("Connected to engine (ZMQ mode). Press Ctrl+C to stop.")
-
-        # Example: run hedge using client-side algorithm
-        from calais_order_execution.client.algorithms import hedge_deribit_options
-
-        internal_id = await hedge_deribit_options(
-            client=client,
-            symbol1="BTC-30JAN26-100000-C",
-            symbol2="BTC-30JAN26-100000-P",
-            side1=OrderSide.BUY,
-            side2=OrderSide.SELL,
-            amount=1,
-            batch_amount=0.1,
-        )
-        logger.info(f"Hedge completed with internal_id: {internal_id}")
-
-        while True:
-            await asyncio.sleep(10)
-
-    except KeyboardInterrupt:
-        logger.info("Shutting down...")
-    finally:
-        await client.disconnect()
+        logger.info("Done")
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Calais Demo")
-    parser.add_argument(
-        "--mode", choices=["local", "zmq"], default="local",
-        help="local = in-process, zmq = connect to engine via ZMQ",
-    )
-    args = parser.parse_args()
-
-    if args.mode == "zmq":
-        asyncio.run(run_zmq())
-    else:
-        asyncio.run(run_local())
+    asyncio.run(main())

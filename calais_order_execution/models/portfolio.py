@@ -9,6 +9,7 @@ class AccountSummary:
     """Account summary from exchange (balance, margin, Greeks)."""
 
     currency: str
+    exchange: str
     equity: float
     balance: float
     available_funds: float

@@ -1,7 +1,6 @@
 """Strategy Client SDK - mirrors CalaisExecutionService interface over ZMQ."""
 
 import asyncio
-import uuid
 from typing import Any, Callable, Optional
 
 import zmq
@@ -41,11 +40,13 @@ class StrategyClient:
     def __init__(
         self,
         zmq_config: ZMQConfig,
-        strategy_id: str = "",
+        strategy_id: str,
         request_timeout: float = 30.0,
     ):
+        if not strategy_id:
+            raise ValueError("strategy_id is required")
         self._zmq_config = zmq_config
-        self._strategy_id = strategy_id or uuid.uuid4().hex
+        self._strategy_id = strategy_id
         self._request_timeout = request_timeout
         self._ctx: Optional[zmq.asyncio.Context] = None
         self._dealer: Optional[zmq.asyncio.Socket] = None
