@@ -22,3 +22,8 @@ zmq:
   pub_endpoint: "tcp://*:5556"
   router_connect: "tcp://localhost:5555"
   pub_connect: "tcp://localhost:5556"
+
+database:
+  dsn: "postgresql://localhost:5432/calais"
+  pool_min: 2
+  pool_max: 10

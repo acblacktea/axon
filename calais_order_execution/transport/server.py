@@ -265,8 +265,7 @@ class ZMQTransportServer:
         topic = (order.strategy_id or "__broadcast__").encode("utf-8")
 
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._pub.send_multipart([topic, event_bytes]))
+            asyncio.ensure_future(self._pub.send_multipart([topic, event_bytes]))
         except Exception as e:
             logger.error(f"Failed to publish order update event: {e}")
 
@@ -284,8 +283,7 @@ class ZMQTransportServer:
         topic = b"__broadcast__"
 
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._pub.send_multipart([topic, event_bytes]))
+            asyncio.ensure_future(self._pub.send_multipart([topic, event_bytes]))
         except Exception as e:
             logger.error(f"Failed to publish account update event: {e}")
 
@@ -303,7 +301,6 @@ class ZMQTransportServer:
         topic = b"__broadcast__"
 
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._pub.send_multipart([topic, event_bytes]))
+            asyncio.ensure_future(self._pub.send_multipart([topic, event_bytes]))
         except Exception as e:
             logger.error(f"Failed to publish position update event: {e}")

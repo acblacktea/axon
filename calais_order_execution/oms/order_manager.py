@@ -38,7 +38,10 @@ class OrderManager:
         """
         async with self._lock:
             self._order_cache[order.order_id] = order
-            await self._repository.save(order)
+            try:
+                await self._repository.save(order)
+            except Exception:
+                logger.exception(f"Failed to persist new order {order.order_id} to DB")
             logger.info(f"Added order {order.order_id}: {order.instrument} {order.side.value} {order.amount}")
 
         await self._notify_update(order)
@@ -62,12 +65,18 @@ class OrderManager:
                 )
                 return
 
-            # Preserve strategy_id from existing order if incoming doesn't have one
-            if not order.strategy_id and existing and existing.strategy_id:
-                order.strategy_id = existing.strategy_id
+            # Preserve fields from existing order if incoming doesn't have them
+            if existing:
+                if not order.strategy_id and existing.strategy_id:
+                    order.strategy_id = existing.strategy_id
+                if not order.internal_order_id and existing.internal_order_id:
+                    order.internal_order_id = existing.internal_order_id
 
             self._order_cache[order.order_id] = order
-            await self._repository.update(order)
+            try:
+                await self._repository.update(order)
+            except Exception:
+                logger.exception(f"Failed to persist order {order.order_id} to DB")
             logger.info(
                 f"Updated order {order.order_id}: status={order.status.value}, "
                 f"filled={order.filled_amount}/{order.amount}"

@@ -174,11 +174,24 @@ class WebSocketBase(ABC):
             raise
 
     async def _reconnect(self) -> None:
-        """Reconnect with exponential backoff."""
+        """Reconnect with exponential backoff.
+
+        Closes existing connection first, then establishes a new one.
+        Auth uses limited retries (3) - if it fails, we tear down and retry
+        the full reconnect cycle instead of retrying auth on a dead connection.
+        """
         if not self._running:
             return
 
+        # Close existing connection cleanly
         self._connected = False
+        if self._ws:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+
         self._reconnect_attempts += 1
 
         # Calculate delay with exponential backoff and jitter
@@ -192,12 +205,12 @@ class WebSocketBase(ABC):
 
         try:
             await self._connect_ws()
-            # Authenticate and setup subscriptions (receive loop is already running)
+            # Auth with limited retries - fail fast so we can rebuild the connection
             await self._authenticate()
             await self._on_authenticated()
         except Exception as e:
             logger.error(f"Reconnection failed: {e}")
-            # Schedule another reconnection attempt
+            # Schedule another reconnection attempt (full cycle: close + reconnect)
             asyncio.create_task(self._reconnect())
 
     async def _receive_loop(self) -> None:
@@ -263,6 +276,12 @@ class WebSocketBase(ABC):
                     await self._send(heartbeat)
                     logger.debug("Heartbeat sent")
 
+            except (websockets.ConnectionClosed, RuntimeError) as e:
+                logger.warning(f"Heartbeat detected broken connection: {e}")
+                self._connected = False
+                if self._running:
+                    asyncio.create_task(self._reconnect())
+                break
             except Exception as e:
                 logger.error(f"Heartbeat error: {e}")
 
@@ -335,7 +354,10 @@ class WebSocketBase(ABC):
                 raise
 
             if attempt < retries:
-                delay = self._config.retry_delay_seconds * (2 ** attempt)
+                delay = min(
+                    self._config.retry_delay_seconds * (2 ** attempt),
+                    self._config.max_reconnect_delay_seconds,
+                )
                 delay = delay * (0.5 + random.random())
                 logger.info(f"Retrying {method} in {delay:.2f}s...")
                 await asyncio.sleep(delay)

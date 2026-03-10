@@ -112,7 +112,7 @@ def _row_to_position(row: asyncpg.Record) -> Position:
         total_profit_loss=row["total_profit_loss"],
         floating_profit_loss=row["floating_profit_loss"],
         realized_profit_loss=row["realized_profit_loss"],
-        timestamp=row["timestamp"],
+        timestamp=row["timestamp"].replace(tzinfo=None) if row["timestamp"] else None,
     )
 
 

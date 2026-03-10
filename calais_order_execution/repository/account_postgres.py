@@ -105,7 +105,7 @@ def _row_to_summary(row: asyncpg.Record) -> AccountSummary:
         futures_pl=row["futures_pl"],
         options_pl=row["options_pl"],
         total_pl=row["total_pl"],
-        timestamp=row["timestamp"],
+        timestamp=row["timestamp"].replace(tzinfo=None) if row["timestamp"] else None,
     )
 
 

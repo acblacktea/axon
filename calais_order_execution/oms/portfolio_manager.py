@@ -39,7 +39,12 @@ class PortfolioManager:
         """Update account summary and notify callbacks."""
         async with self._lock:
             self._account_cache[(summary.exchange, summary.currency)] = summary
-            await self._account_repo.save(summary)
+            try:
+                await self._account_repo.save(summary)
+            except Exception:
+                logger.exception(
+                    f"Failed to persist account {summary.exchange}/{summary.currency} to DB"
+                )
             logger.debug(
                 f"Account update [{summary.exchange}/{summary.currency}]: "
                 f"equity={summary.equity}, balance={summary.balance}, "
@@ -86,7 +91,10 @@ class PortfolioManager:
             for pos in positions:
                 self._position_cache[(pos.exchange, pos.instrument)] = pos
             # Persist
-            await self._position_repo.replace_all(exchange, positions)
+            try:
+                await self._position_repo.replace_all(exchange, positions)
+            except Exception:
+                logger.exception(f"Failed to persist positions for {exchange} to DB")
             logger.debug(f"Positions updated [{exchange}]: {len(positions)} instruments")
 
         for callback in self._position_callbacks:

@@ -87,7 +87,11 @@ class DeribitOMS(BaseOMS):
         return request_id, message.get("result"), None
 
     async def _authenticate(self) -> None:
-        """Authenticate with Deribit."""
+        """Authenticate with Deribit.
+
+        Uses limited retries (3) so that a dead connection fails fast
+        and triggers a full reconnect instead of retrying on a stale socket.
+        """
         result = await self._send_request(
             "public/auth",
             {
@@ -95,6 +99,7 @@ class DeribitOMS(BaseOMS):
                 "client_id": self._exchange_config.api_key,
                 "client_secret": self._exchange_config.api_secret,
             },
+            max_retries=3,
         )
         logger.info(f"Deribit WebSocket authenticated, token expires in {result.get('expires_in')}s")
 

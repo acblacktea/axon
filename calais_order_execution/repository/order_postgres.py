@@ -65,7 +65,7 @@ ON CONFLICT (order_id) DO UPDATE SET
     order_type = EXCLUDED.order_type,
     amount = EXCLUDED.amount,
     status = EXCLUDED.status,
-    internal_order_id = EXCLUDED.internal_order_id,
+    internal_order_id = COALESCE(EXCLUDED.internal_order_id, orders.internal_order_id),
     price = EXCLUDED.price,
     filled_amount = EXCLUDED.filled_amount,
     average_price = EXCLUDED.average_price,
@@ -74,7 +74,7 @@ ON CONFLICT (order_id) DO UPDATE SET
     liquidity = EXCLUDED.liquidity,
     post_only = EXCLUDED.post_only,
     reject_post_only = EXCLUDED.reject_post_only,
-    strategy_id = EXCLUDED.strategy_id,
+    strategy_id = COALESCE(EXCLUDED.strategy_id, orders.strategy_id),
     updated_at = EXCLUDED.updated_at;
 """
 
@@ -126,8 +126,8 @@ def _row_to_order(row: asyncpg.Record) -> Order:
         post_only=row["post_only"] or False,
         reject_post_only=row["reject_post_only"] or False,
         strategy_id=row["strategy_id"],
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
+        created_at=row["created_at"].replace(tzinfo=None) if row["created_at"] else datetime.utcnow(),
+        updated_at=row["updated_at"].replace(tzinfo=None) if row["updated_at"] else datetime.utcnow(),
     )
 
 
