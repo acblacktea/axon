@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
-"""Strategy 2 - Hedge algorithm runner.
-
-Demonstrates:
-  - Connecting to engine via ZMQ StrategyClient
-  - Running the hedge_deribit_options algorithm (client-side)
-  - Receiving real-time order updates during algorithm execution
-  - Querying active orders and positions
+"""Strategy 2 - Place/cancel orders in a loop, print all streaming updates as JSON.
 
 Usage (engine must be running first):
     python examples/strategy_two.py
-    python examples/strategy_two.py --symbol1 BTC-27JUN26-120000-C --symbol2 BTC-27JUN26-120000-P
 """
 
-import argparse
 import asyncio
+import json
 import signal
+from dataclasses import asdict
+from datetime import datetime
 
 from calais_order_execution.client import StrategyClient
-from calais_order_execution.client.algorithms import hedge_deribit_options
 from calais_order_execution.config import ZMQConfig
 from calais_order_execution.models import (
     AccountSummary,
     Order,
+    OrderRequest,
     OrderSide,
+    OrderType,
     Position,
 )
 from calais_order_execution.util.logging import get_logger, init_logging
@@ -31,107 +27,95 @@ init_logging(console_output=True)
 logger = get_logger(__name__)
 
 EXCHANGE = "deribit"
+INSTRUMENT = "BTC-27MAR26-70000-P"
+TICK_SIZE = 0.0005
 
 
-class HedgeStrategy:
-    """Strategy that runs the options hedge algorithm."""
+def _to_json(obj) -> str:
+    """Convert a dataclass to a single-line JSON string."""
+    d = asdict(obj)
 
+    def _default(o):
+        if isinstance(o, datetime):
+            return o.isoformat()
+        if isinstance(o, (set, frozenset)):
+            return list(o)
+        return str(o)
+
+    return json.dumps(d, default=_default, ensure_ascii=False)
+
+
+class Strategy:
     def __init__(self, client: StrategyClient):
         self._client = client
-        self._fill_count = 0
-
-        # Register callbacks
         self._client.register_order_update_callback(self._on_order_update)
         self._client.register_account_update_callback(self._on_account_update)
         self._client.register_position_update_callback(self._on_position_update)
 
     def _on_order_update(self, order: Order) -> None:
-        self._fill_count += 1
-        logger.info(
-            f"[S2 ORDER #{self._fill_count}] {order.instrument} {order.side.value} "
-            f"status={order.status.value} filled={order.filled_amount}/{order.amount} "
-            f"price={order.price} avg={order.average_price}"
-        )
+        logger.info(f"[S2 ORDER] {_to_json(order)}")
 
     def _on_account_update(self, summary: AccountSummary) -> None:
-        logger.info(
-            f"[S2 ACCOUNT] {summary.currency}: equity={summary.equity:.6f} "
-            f"available={summary.available_funds:.6f}"
-        )
+        logger.info(f"[S2 ACCOUNT] {_to_json(summary)}")
 
     def _on_position_update(self, positions: list[Position]) -> None:
-        logger.info(f"[S2 POSITIONS] {len(positions)} positions updated")
+        for p in positions:
+            logger.info(f"[S2 POSITION] {_to_json(p)}")
 
-    async def run(
-        self,
-        symbol1: str,
-        symbol2: str,
-        amount: float,
-        batch_amount: float,
-    ) -> None:
-        """Run the hedge algorithm."""
-        logger.info("[S2] Strategy 2 started - hedge algorithm")
-        logger.info(f"[S2] Hedge: BUY {symbol1} (maker) / SELL {symbol2} (taker)")
-        logger.info(f"[S2] Total amount={amount}, batch={batch_amount}")
+    async def run(self) -> None:
+        logger.info("[S2] Strategy 2 started")
 
-        # Log pre-hedge state
-        await self._log_state("PRE-HEDGE")
+        while True:
+            try:
+                # Buy taker (at ask price to guarantee fill)
+                ticker = await self._client.get_ticker(EXCHANGE, INSTRUMENT)
+                ask = ticker.best_ask_price
+                if not ask or ask <= 0:
+                    ask = (ticker.mark_price or 0.05) * 1.5
+                buy_price = round(ask / TICK_SIZE) * TICK_SIZE
 
-        # Run the hedge algorithm
-        internal_id = await hedge_deribit_options(
-            client=self._client,
-            symbol1=symbol1,
-            symbol2=symbol2,
-            side1=OrderSide.BUY,
-            side2=OrderSide.SELL,
-            amount=amount,
-            batch_amount=batch_amount,
-            chase_maker_max_attempt_second=60,
-        )
-        logger.info(f"[S2] Hedge completed, internal_id={internal_id}")
+                logger.info(f"[S2] BUY taker 0.1 @ {buy_price}")
+                buy_order = await self._client.place_order(EXCHANGE, OrderRequest(
+                    instrument=INSTRUMENT,
+                    side=OrderSide.BUY,
+                    amount=0.1,
+                    order_type=OrderType.LIMIT,
+                    price=buy_price,
+                    label="s2_buy",
+                ))
+                logger.info(f"[S2] Buy placed id={buy_order.order_id}")
 
-        # Log post-hedge state
-        await self._log_state("POST-HEDGE")
+                # Wait 3s
+                await asyncio.sleep(3)
 
-        # Show all orders from this strategy
-        try:
-            orders = await self._client.get_all_orders()
-            logger.info(f"[S2] Total orders: {len(orders)}")
-            for o in orders:
-                logger.info(
-                    f"  {o.instrument} {o.side.value} {o.status.value} "
-                    f"filled={o.filled_amount}/{o.amount}"
-                )
-        except Exception as e:
-            logger.warning(f"[S2] get_all_orders failed: {e}")
+                # Sell taker (at bid price to guarantee fill)
+                ticker = await self._client.get_ticker(EXCHANGE, INSTRUMENT)
+                bid = ticker.best_bid_price
+                if not bid or bid <= 0:
+                    bid = (ticker.mark_price or 0.05) * 0.5
+                sell_price = round(bid / TICK_SIZE) * TICK_SIZE
+                if sell_price <= 0:
+                    sell_price = TICK_SIZE
 
-        logger.info("[S2] Strategy 2 finished")
+                logger.info(f"[S2] SELL taker 0.1 @ {sell_price}")
+                sell_order = await self._client.place_order(EXCHANGE, OrderRequest(
+                    instrument=INSTRUMENT,
+                    side=OrderSide.SELL,
+                    amount=0.1,
+                    order_type=OrderType.LIMIT,
+                    price=sell_price,
+                    label="s2_sell",
+                ))
+                logger.info(f"[S2] Sell placed id={sell_order.order_id}")
 
-    async def _log_state(self, label: str) -> None:
-        """Log current account and position state."""
-        logger.info(f"[S2] --- {label} ---")
-        try:
-            summary = await self._client.get_account_summary(EXCHANGE, "BTC")
-            if summary:
-                logger.info(
-                    f"[S2] Account: equity={summary.equity:.6f} "
-                    f"delta={summary.delta_total:.4f}"
-                )
-        except Exception as e:
-            logger.warning(f"[S2] account query failed: {e}")
+            except Exception as e:
+                logger.error(f"[S2] Error: {e}")
 
-        try:
-            positions = await self._client.get_positions(EXCHANGE, "BTC")
-            for p in positions:
-                logger.info(
-                    f"[S2] Position: {p.instrument} size={p.size} "
-                    f"delta={p.delta:.4f} pnl={p.total_profit_loss:.6f}"
-                )
-        except Exception as e:
-            logger.warning(f"[S2] positions query failed: {e}")
+            # Wait 3s before next round
+            await asyncio.sleep(3)
 
 
-async def main(args) -> None:
+async def main() -> None:
     zmq_config = ZMQConfig()
     client = StrategyClient(zmq_config, strategy_id="strategy_two")
 
@@ -148,16 +132,9 @@ async def main(args) -> None:
         await client.connect()
         logger.info("[S2] Connected to engine")
 
-        strategy = HedgeStrategy(client)
+        strategy = Strategy(client)
 
-        strategy_task = asyncio.create_task(
-            strategy.run(
-                symbol1=args.symbol1,
-                symbol2=args.symbol2,
-                amount=args.amount,
-                batch_amount=args.batch_amount,
-            )
-        )
+        strategy_task = asyncio.create_task(strategy.run())
         stop_task = asyncio.create_task(stop_event.wait())
 
         done, pending = await asyncio.wait(
@@ -175,10 +152,4 @@ async def main(args) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Strategy 2 - Hedge Runner")
-    parser.add_argument("--symbol1", default="BTC-27JUN26-120000-C", help="Maker leg instrument")
-    parser.add_argument("--symbol2", default="BTC-27JUN26-120000-P", help="Taker leg instrument")
-    parser.add_argument("--amount", type=float, default=1.0, help="Total hedge amount")
-    parser.add_argument("--batch-amount", type=float, default=0.5, help="Per-batch amount")
-    args = parser.parse_args()
-    asyncio.run(main(args))
+    asyncio.run(main())
