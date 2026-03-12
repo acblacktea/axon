@@ -62,6 +62,34 @@ class Strategy:
         for p in positions:
             logger.info(f"[S1 POSITION] {_to_json(p)}")
 
+    async def clear(self) -> None:
+        """Cancel all orders and flatten position for INSTRUMENT before running."""
+        logger.info(f"[S1] Clearing orders and positions for {INSTRUMENT}")
+
+        # Cancel all active orders for this instrument
+        active_orders = await self._client.get_active_orders()
+        for order in active_orders:
+            if order.instrument == INSTRUMENT:
+                logger.info(f"[S1] Cancelling order {order.order_id}")
+                await self._client.cancel_order(EXCHANGE, order.order_id)
+
+        # Flatten position if any
+        positions = await self._client.get_positions(EXCHANGE)
+        for pos in positions:
+            if pos.instrument == INSTRUMENT and pos.size != 0:
+                side = OrderSide.SELL if pos.direction == "buy" else OrderSide.BUY
+                amount = abs(pos.size)
+                logger.info(f"[S1] Flattening position: {side.value} {amount} {INSTRUMENT}")
+                await self._client.place_order(EXCHANGE, OrderRequest(
+                    instrument=INSTRUMENT,
+                    side=side,
+                    amount=amount,
+                    order_type=OrderType.MARKET,
+                    label="s1_clear",
+                ))
+
+        logger.info("[S1] Clear done")
+
     async def run(self) -> None:
         logger.info("[S1] Strategy 1 started")
 
@@ -133,6 +161,8 @@ async def main() -> None:
         logger.info("[S1] Connected to engine")
 
         strategy = Strategy(client)
+
+        await strategy.clear()
 
         strategy_task = asyncio.create_task(strategy.run())
         stop_task = asyncio.create_task(stop_event.wait())
