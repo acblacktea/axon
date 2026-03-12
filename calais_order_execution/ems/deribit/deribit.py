@@ -56,23 +56,27 @@ class DeribitEMS(BaseEMS):
             self._access_token = result["access_token"]
             self._token_expiry = time.time() + result["expires_in"] - 60
 
+    async def _parse_response(self, response: Any) -> Any:
+        """Parse and validate a Deribit API response."""
+        if response.status != 200:
+            text = await response.text()
+            raise Exception(f"Deribit HTTP {response.status}: {text}")
+        data = await response.json()
+        if "error" in data:
+            raise Exception(f"Deribit API error: {data['error']}")
+        return data["result"]
+
     async def _public_request(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Make a public API request."""
         async with await self._http.get(path, params=params) as response:
-            data = await response.json()
-            if "error" in data:
-                raise Exception(f"Deribit API error: {data['error']}")
-            return data["result"]
+            return await self._parse_response(response)
 
     async def _private_request(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Make a private (authenticated) API request."""
         await self._ensure_authenticated()
         headers = {"Authorization": f"Bearer {self._access_token}"}
         async with await self._http.get(path, params=params, headers=headers) as response:
-            data = await response.json()
-            if "error" in data:
-                raise Exception(f"Deribit API error: {data['error']}")
-            return data["result"]
+            return await self._parse_response(response)
 
     async def place_order(self, request: OrderRequest) -> Order:
         """Place a new order on Deribit."""
