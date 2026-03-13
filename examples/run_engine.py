@@ -14,6 +14,9 @@ import asyncio
 import signal
 
 from calais_order_execution.config import load_config
+from calais_order_execution.repository.order_postgres import PostgresOrderRepository
+from calais_order_execution.repository.account_postgres import PostgresAccountRepository
+from calais_order_execution.repository.position_postgres import PostgresPositionRepository
 from calais_order_execution.service import CalaisExecutionService
 from calais_order_execution.util.logging import get_logger, init_logging
 
@@ -23,7 +26,23 @@ logger = get_logger(__name__)
 
 async def main(config_path: str) -> None:
     config = load_config(config_path)
-    service = CalaisExecutionService(config)
+
+    order_repo = None
+    account_repo = None
+    position_repo = None
+
+    if config.database:
+        logger.info("Initializing PostgreSQL repositories...")
+        pool = await PostgresOrderRepository.create_pool(config.database)
+        order_repo = PostgresOrderRepository(pool)
+        await order_repo.ensure_table()
+        account_repo = PostgresAccountRepository(pool)
+        await account_repo.ensure_table()
+        position_repo = PostgresPositionRepository(pool)
+        await position_repo.ensure_table()
+        logger.info("PostgreSQL repositories initialized")
+
+    service = CalaisExecutionService(config, order_repo, account_repo, position_repo)
 
     stop_event = asyncio.Event()
 
@@ -49,6 +68,8 @@ async def main(config_path: str) -> None:
     finally:
         logger.info("Shutting down engine...")
         await service.stop()
+        if order_repo:
+            await order_repo.close()
         logger.info("Engine stopped")
 
 

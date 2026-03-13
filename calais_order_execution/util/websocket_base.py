@@ -203,8 +203,20 @@ class WebSocketBase(ABC):
         logger.info(f"Reconnecting in {delay:.1f}s (attempt {self._reconnect_attempts})")
         await asyncio.sleep(delay)
 
+        # Cancel old tasks before reconnecting
+        for task in self._tasks:
+            task.cancel()
+        self._tasks.clear()
+
         try:
             await self._connect_ws()
+
+            # Restart background tasks so responses can be received
+            self._tasks = [
+                asyncio.create_task(self._receive_loop()),
+                asyncio.create_task(self._heartbeat_loop()),
+            ]
+
             # Auth with limited retries - fail fast so we can rebuild the connection
             await self._authenticate()
             await self._on_authenticated()
