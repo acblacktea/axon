@@ -4,14 +4,20 @@ from typing import Callable
 
 from calais_order_execution.config import Config
 from calais_order_execution.ems.ems_service import EMSService
-from calais_order_execution.models import Order
+from calais_order_execution.models import Fill, Order
 from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.oms.deribit import DeribitOMS
+from calais_order_execution.oms.fill_manager import FillManager
+from calais_order_execution.oms.fill_reconciler import FillReconciler
 from calais_order_execution.oms.order_manager import OrderManager
 from calais_order_execution.oms.portfolio_manager import PortfolioManager
 from calais_order_execution.oms.position_refresher import PositionRefresher
 from calais_order_execution.oms.reconciler import OrderReconciler
-from calais_order_execution.repository import InMemoryOrderRepository, OrderRepository
+from calais_order_execution.repository import (
+    FillRepository,
+    InMemoryOrderRepository,
+    OrderRepository,
+)
 from calais_order_execution.repository.account_base import AccountRepository
 from calais_order_execution.repository.position_base import PositionRepository
 from calais_order_execution.util import WebSocketBase
@@ -30,6 +36,7 @@ class OMSService:
         repository: OrderRepository | None = None,
         account_repository: AccountRepository | None = None,
         position_repository: PositionRepository | None = None,
+        fill_repository: FillRepository | None = None,
     ):
         """Initialize OMS service.
 
@@ -39,6 +46,7 @@ class OMSService:
             repository: Order repository. Uses InMemoryOrderRepository if not provided.
             account_repository: Account repository. Uses InMemoryAccountRepository if not provided.
             position_repository: Position repository. Uses InMemoryPositionRepository if not provided.
+            fill_repository: Fill repository. Uses InMemoryFillRepository if not provided.
         """
         self._config = config
         self._ems_service = ems_service
@@ -47,11 +55,13 @@ class OMSService:
         self._oms_ws: dict[str, WebSocketBase] = {}
         self._reconcilers: dict[str, OrderReconciler] = {}
         self._position_refreshers: dict[str, PositionRefresher] = {}
+        self._fill_reconcilers: dict[str, FillReconciler] = {}
         self._order_manager = OrderManager(self._repository)
         self._portfolio_manager = PortfolioManager(
             account_repository=account_repository,
             position_repository=position_repository,
         )
+        self._fill_manager = FillManager(fill_repository)
 
         self._init_clients()
 
@@ -66,6 +76,7 @@ class OMSService:
                     self._config.websocket,
                     portfolio_manager=self._portfolio_manager,
                     portfolio_config=self._config.portfolio,
+                    fill_manager=self._fill_manager,
                 )
                 self._oms_ws[name] = ws
 
@@ -82,6 +93,13 @@ class OMSService:
                         ems,
                         self._portfolio_manager,
                         self._config.portfolio,
+                    )
+                    # Fill reconciler (REST fallback for trade WS)
+                    self._fill_reconcilers[name] = FillReconciler(
+                        ems,
+                        self._fill_manager,
+                        self._config.portfolio,
+                        self._config.fill_reconciliation,
                     )
             else:
                 logger.warning(f"Unsupported exchange for OMS: {name}")
@@ -103,8 +121,18 @@ class OMSService:
             await refresher.start()
             logger.info(f"Started position refresher: {name}")
 
+        # Start fill reconcilers
+        for name, fill_reconciler in self._fill_reconcilers.items():
+            await fill_reconciler.start()
+            logger.info(f"Started fill reconciler: {name}")
+
     async def stop(self) -> None:
         """Stop all OMS components."""
+        # Stop fill reconcilers
+        for name, fill_reconciler in self._fill_reconcilers.items():
+            await fill_reconciler.stop()
+            logger.info(f"Stopped fill reconciler: {name}")
+
         # Stop position refreshers
         for name, refresher in self._position_refreshers.items():
             await refresher.stop()
@@ -183,6 +211,30 @@ class OMSService:
     def unregister_position_update_callback(self, callback: Callable[[list[Position]], None]) -> None:
         """Unregister a position callback."""
         self._portfolio_manager.unregister_position_callback(callback)
+
+    # ============= Fills =============
+
+    @property
+    def fill_manager(self) -> FillManager:
+        return self._fill_manager
+
+    async def get_fill(self, trade_id: str) -> Fill | None:
+        return await self._fill_manager.get(trade_id)
+
+    async def get_fills_by_order(self, order_id: str) -> list[Fill]:
+        return await self._fill_manager.get_by_order_id(order_id)
+
+    async def get_fills_by_strategy(self, strategy_id: str) -> list[Fill]:
+        return await self._fill_manager.get_by_strategy_id(strategy_id)
+
+    async def get_all_fills(self) -> list[Fill]:
+        return await self._fill_manager.get_all()
+
+    def register_fill_update_callback(self, callback: Callable[[Fill], None]) -> None:
+        self._fill_manager.register_update_callback(callback)
+
+    def unregister_fill_update_callback(self, callback: Callable[[Fill], None]) -> None:
+        self._fill_manager.unregister_update_callback(callback)
 
     async def __aenter__(self) -> "OMSService":
         await self.start()

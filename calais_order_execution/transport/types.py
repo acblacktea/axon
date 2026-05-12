@@ -15,6 +15,8 @@ class CommandType(str, Enum):
     GET_TICKER = "get_ticker"
     GET_ACCOUNT_SUMMARY = "get_account_summary"
     GET_POSITIONS = "get_positions"
+    GET_FILLS_BY_ORDER = "get_fills_by_order"
+    GET_FILLS_BY_STRATEGY = "get_fills_by_strategy"
 
 
 class EventType(str, Enum):
@@ -23,3 +25,4 @@ class EventType(str, Enum):
     ORDER_UPDATE = "order_update"
     ACCOUNT_UPDATE = "account_update"
     POSITION_UPDATE = "position_update"
+    FILL_UPDATE = "fill_update"

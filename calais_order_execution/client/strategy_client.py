@@ -7,6 +7,7 @@ import zmq
 import zmq.asyncio
 
 from calais_order_execution.config import ZMQConfig
+from calais_order_execution.models.fill import Fill
 from calais_order_execution.models.order import Order, OrderRequest, Ticker
 from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.models.messages import Command
@@ -16,6 +17,7 @@ from calais_order_execution.transport.serialization import (
     serialize_order_request,
     deserialize_response,
     deserialize_event,
+    deserialize_fill,
     deserialize_order,
     deserialize_ticker,
     deserialize_account_summary,
@@ -59,6 +61,8 @@ class StrategyClient:
         self._async_order_update_callbacks: list[Callable[[Order], Any]] = []
         self._account_update_callbacks: list[Callable[[AccountSummary], None]] = []
         self._position_update_callbacks: list[Callable[[list[Position]], None]] = []
+        self._fill_update_callbacks: list[Callable[[Fill], None]] = []
+        self._async_fill_update_callbacks: list[Callable[[Fill], Any]] = []
 
     @property
     def strategy_id(self) -> str:
@@ -183,6 +187,9 @@ class StrategyClient:
                 elif event.event_type == EventType.POSITION_UPDATE.value:
                     positions = [deserialize_position(p) for p in event.data]
                     self._notify_position_update(positions)
+                elif event.event_type == EventType.FILL_UPDATE.value:
+                    fill = deserialize_fill(event.data)
+                    await self._notify_fill_update(fill)
 
             except asyncio.CancelledError:
                 break
@@ -250,6 +257,33 @@ class StrategyClient:
         """Unregister a position callback."""
         if callback in self._position_update_callbacks:
             self._position_update_callbacks.remove(callback)
+
+    # ============= Fill Callbacks =============
+
+    async def _notify_fill_update(self, fill: Fill) -> None:
+        for callback in self._fill_update_callbacks:
+            try:
+                callback(fill)
+            except Exception as e:
+                logger.error(f"Fill update callback error: {e}")
+        for callback in self._async_fill_update_callbacks:
+            try:
+                await callback(fill)
+            except Exception as e:
+                logger.error(f"Async fill update callback error: {e}")
+
+    def register_fill_update_callback(self, callback: Callable[[Fill], None]) -> None:
+        """Register a synchronous callback for fills (trade executions)."""
+        self._fill_update_callbacks.append(callback)
+
+    def unregister_fill_update_callback(self, callback: Callable[[Fill], None]) -> None:
+        """Unregister a fill callback."""
+        if callback in self._fill_update_callbacks:
+            self._fill_update_callbacks.remove(callback)
+
+    def register_async_fill_update_callback(self, callback: Callable[[Fill], Any]) -> None:
+        """Register an async callback for fills."""
+        self._async_fill_update_callbacks.append(callback)
 
     # ============= Strategy Interface (mirrors CalaisExecutionService) =============
 
@@ -353,6 +387,28 @@ class StrategyClient:
         if not response.success:
             raise RuntimeError(f"get_positions failed: {response.error}")
         return [deserialize_position(p) for p in response.data]
+
+    # ============= Fills =============
+
+    async def get_fills_by_order(self, order_id: str) -> list[Fill]:
+        """Fetch all fills for a given order_id from the engine."""
+        response = await self._send_command(
+            CommandType.GET_FILLS_BY_ORDER,
+            {"order_id": order_id},
+        )
+        if not response.success:
+            raise RuntimeError(f"get_fills_by_order failed: {response.error}")
+        return [deserialize_fill(f) for f in response.data]
+
+    async def get_fills_by_strategy(self, strategy_id: str | None = None) -> list[Fill]:
+        """Fetch all fills for a strategy (defaults to this client's strategy_id)."""
+        response = await self._send_command(
+            CommandType.GET_FILLS_BY_STRATEGY,
+            {"strategy_id": strategy_id or self._strategy_id},
+        )
+        if not response.success:
+            raise RuntimeError(f"get_fills_by_strategy failed: {response.error}")
+        return [deserialize_fill(f) for f in response.data]
 
     # ============= Context Manager =============
 

@@ -4,6 +4,8 @@ from .account_base import AccountRepository
 from .account_memory import InMemoryAccountRepository
 from .position_base import PositionRepository
 from .position_memory import InMemoryPositionRepository
+from .fill_base import FillRepository
+from .fill_memory import InMemoryFillRepository
 
 __all__ = [
     "OrderRepository",
@@ -12,6 +14,8 @@ __all__ = [
     "InMemoryAccountRepository",
     "PositionRepository",
     "InMemoryPositionRepository",
+    "FillRepository",
+    "InMemoryFillRepository",
 ]
 
 try:
@@ -29,5 +33,11 @@ except ImportError:
 try:
     from .position_postgres import PostgresPositionRepository
     __all__.append("PostgresPositionRepository")
+except ImportError:
+    pass
+
+try:
+    from .fill_postgres import PostgresFillRepository
+    __all__.append("PostgresFillRepository")
 except ImportError:
     pass

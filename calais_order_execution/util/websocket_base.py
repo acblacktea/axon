@@ -11,6 +11,7 @@ from websockets.client import WebSocketClientProtocol
 
 from calais_order_execution.config import WebSocketConfig
 from calais_order_execution.util.logging import get_logger
+from calais_order_execution.util.metrics import get_metrics
 
 logger = get_logger(__name__)
 
@@ -45,6 +46,12 @@ class WebSocketBase(ABC):
     def is_connected(self) -> bool:
         """Check if WebSocket is connected."""
         return self._connected and self._ws is not None
+
+    @property
+    def _metrics_exchange(self) -> str:
+        """Exchange label for metrics. Falls back to class name if subclass
+        does not define `exchange_name` (e.g. utility/test subclasses)."""
+        return getattr(self, "exchange_name", type(self).__name__)
 
     @abstractmethod
     def _get_ws_url(self) -> str:
@@ -137,6 +144,7 @@ class WebSocketBase(ABC):
         """Disconnect and cleanup."""
         self._running = False
         self._connected = False
+        get_metrics().set_ws_connected(self._metrics_exchange, False)
 
         # Cancel all tasks
         for task in self._tasks:
@@ -166,11 +174,13 @@ class WebSocketBase(ABC):
             self._ws = await websockets.connect(url)
             self._connected = True
             self._reconnect_attempts = 0
+            get_metrics().set_ws_connected(self._metrics_exchange, True)
             logger.info("WebSocket connected")
 
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
             self._connected = False
+            get_metrics().set_ws_connected(self._metrics_exchange, False)
             raise
 
     async def _reconnect(self) -> None:
@@ -185,6 +195,7 @@ class WebSocketBase(ABC):
 
         # Close existing connection cleanly
         self._connected = False
+        get_metrics().set_ws_connected(self._metrics_exchange, False)
         if self._ws:
             try:
                 await self._ws.close()
@@ -193,6 +204,7 @@ class WebSocketBase(ABC):
             self._ws = None
 
         self._reconnect_attempts += 1
+        get_metrics().inc_ws_reconnect(self._metrics_exchange)
 
         # Calculate delay with exponential backoff and jitter
         base_delay = self._config.reconnect_delay_seconds
@@ -267,6 +279,7 @@ class WebSocketBase(ABC):
             except websockets.ConnectionClosed as e:
                 logger.warning(f"WebSocket connection closed: {e}")
                 self._connected = False
+                get_metrics().set_ws_connected(self._metrics_exchange, False)
                 if self._running:
                     asyncio.create_task(self._reconnect())
                 break
@@ -291,6 +304,9 @@ class WebSocketBase(ABC):
             except (websockets.ConnectionClosed, RuntimeError) as e:
                 logger.warning(f"Heartbeat detected broken connection: {e}")
                 self._connected = False
+                metrics = get_metrics()
+                metrics.inc_ws_heartbeat_miss(self._metrics_exchange)
+                metrics.set_ws_connected(self._metrics_exchange, False)
                 if self._running:
                     asyncio.create_task(self._reconnect())
                 break

@@ -7,6 +7,7 @@ import zmq
 import zmq.asyncio
 
 from calais_order_execution.config import ZMQConfig
+from calais_order_execution.models.fill import Fill
 from calais_order_execution.models.order import Order
 from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.models.messages import Response, Event
@@ -16,6 +17,7 @@ from calais_order_execution.transport.serialization import (
     deserialize_order_request,
     serialize_response,
     serialize_event,
+    serialize_fill,
     serialize_order,
     serialize_ticker,
     serialize_account_summary,
@@ -61,6 +63,7 @@ class ZMQTransportServer:
         self._service.register_order_update_callback(self._on_order_update)
         self._service.register_account_update_callback(self._on_account_update)
         self._service.register_position_update_callback(self._on_position_update)
+        self._service.register_fill_update_callback(self._on_fill_update)
 
         self._running = True
         self._task = asyncio.create_task(self._command_loop())
@@ -72,6 +75,7 @@ class ZMQTransportServer:
         self._service.unregister_order_update_callback(self._on_order_update)
         self._service.unregister_account_update_callback(self._on_account_update)
         self._service.unregister_position_update_callback(self._on_position_update)
+        self._service.unregister_fill_update_callback(self._on_fill_update)
 
         if self._task:
             self._task.cancel()
@@ -232,6 +236,24 @@ class ZMQTransportServer:
                     data=[serialize_position(p) for p in positions],
                 )
 
+            elif cmd_type == CommandType.GET_FILLS_BY_ORDER:
+                order_id = command.payload["order_id"]
+                fills = await self._service.get_fills_by_order(order_id)
+                return Response(
+                    request_id=command.request_id,
+                    success=True,
+                    data=[serialize_fill(f) for f in fills],
+                )
+
+            elif cmd_type == CommandType.GET_FILLS_BY_STRATEGY:
+                strategy_id = command.payload.get("strategy_id") or command.strategy_id
+                fills = await self._service.get_fills_by_strategy(strategy_id)
+                return Response(
+                    request_id=command.request_id,
+                    success=True,
+                    data=[serialize_fill(f) for f in fills],
+                )
+
             else:
                 return Response(
                     request_id=command.request_id,
@@ -304,3 +326,21 @@ class ZMQTransportServer:
             asyncio.ensure_future(self._pub.send_multipart([topic, event_bytes]))
         except Exception as e:
             logger.error(f"Failed to publish position update event: {e}")
+
+    def _on_fill_update(self, fill: Fill) -> None:
+        """Publish a new fill via PUB socket, scoped to its strategy_id."""
+        if self._pub is None or not self._running:
+            return
+
+        event = Event(
+            event_type=EventType.FILL_UPDATE.value,
+            data=serialize_fill(fill),
+            strategy_id=fill.strategy_id or "",
+        )
+        event_bytes = serialize_event(event)
+        topic = (fill.strategy_id or "__broadcast__").encode("utf-8")
+
+        try:
+            asyncio.ensure_future(self._pub.send_multipart([topic, event_bytes]))
+        except Exception as e:
+            logger.error(f"Failed to publish fill update event: {e}")

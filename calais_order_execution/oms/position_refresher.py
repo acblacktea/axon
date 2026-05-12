@@ -6,6 +6,7 @@ from calais_order_execution.config import PortfolioConfig
 from calais_order_execution.ems.base import BaseEMS
 from calais_order_execution.oms.portfolio_manager import PortfolioManager
 from calais_order_execution.util.logging import get_logger
+from calais_order_execution.util.metrics import get_metrics
 
 logger = get_logger(__name__)
 
@@ -69,15 +70,20 @@ class PositionRefresher:
 
     async def _do_refresh(self) -> None:
         """Fetch positions for all configured currencies and update PortfolioManager."""
+        exchange = self._ems.exchange_name
         all_positions = []
+        any_failed = False
         for currency in self._config.currencies:
             try:
                 positions = await self._ems.get_positions(currency)
                 all_positions.extend(positions)
             except Exception as e:
                 logger.error(f"Failed to fetch positions for {currency}: {e}")
+                any_failed = True
 
-        exchange = self._ems.exchange_name
+        if any_failed:
+            get_metrics().inc_reconciler_failure("position", exchange)
+
         await self._portfolio_manager.update_positions(exchange, all_positions)
         if all_positions:
             logger.debug(f"Refreshed {len(all_positions)} positions for {exchange}")

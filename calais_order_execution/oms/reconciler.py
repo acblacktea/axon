@@ -6,6 +6,7 @@ from calais_order_execution.config import ReconciliationConfig
 from calais_order_execution.ems.base import BaseEMS
 from calais_order_execution.oms.order_manager import OrderManager
 from calais_order_execution.util.logging import get_logger
+from calais_order_execution.util.metrics import get_metrics
 
 logger = get_logger(__name__)
 
@@ -106,6 +107,7 @@ class OrderReconciler:
         Returns:
             Number of orders reconciled.
         """
+        exchange_name = self._ems.exchange_name
         try:
             # Get open orders from exchange
             exchange_orders = await self._ems.get_open_orders()
@@ -124,14 +126,19 @@ class OrderReconciler:
                 if o.order_id not in exchange_order_ids
             ]
 
-            # Query each missing order individually to get its final state
+            # Query each missing order individually to get its final state.
+            # Each one of these is a WS message we missed; that's the signal
+            # we want to track.
+            recovered = 0
             for order_id in missing_order_ids:
                 order = await self._ems.get_order(order_id)
                 if order:
                     exchange_orders.append(order)
+                    recovered += 1
                     logger.info(
                         f"Recovered closed order {order_id}: {order.status.value}"
                     )
+            get_metrics().inc_reconciler_recovered("order", exchange_name, recovered)
 
             if not exchange_orders:
                 logger.debug("No orders to reconcile")
@@ -145,6 +152,7 @@ class OrderReconciler:
 
         except Exception as e:
             logger.error(f"Failed to reconcile orders: {e}")
+            get_metrics().inc_reconciler_failure("order", exchange_name)
             return 0
 
     async def __aenter__(self) -> "OrderReconciler":

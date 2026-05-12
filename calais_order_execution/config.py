@@ -29,6 +29,19 @@ class ReconciliationConfig:
 
 
 @dataclass
+class FillReconciliationConfig:
+    """Configuration for fill (trade) reconciliation via REST."""
+
+    enabled: bool = True
+    interval_seconds: int = 60
+    # Window pulled on engine startup, to recover fills missed while offline.
+    lookback_seconds: int = 86400
+    # Each periodic pull re-fetches this much before the cursor, so out-of-order
+    # or clock-skewed trades are not missed at the boundary.
+    overlap_seconds: int = 30
+
+
+@dataclass
 class WebSocketConfig:
     """Configuration for WebSocket connections."""
 
@@ -68,15 +81,26 @@ class DatabaseConfig:
 
 
 @dataclass
+class MetricsConfig:
+    """Configuration for Prometheus metrics."""
+
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 9100
+
+
+@dataclass
 class Config:
     """Main configuration class."""
 
     exchanges: dict[str, ExchangeConfig] = field(default_factory=dict)
     reconciliation: ReconciliationConfig = field(default_factory=ReconciliationConfig)
+    fill_reconciliation: FillReconciliationConfig = field(default_factory=FillReconciliationConfig)
     websocket: WebSocketConfig = field(default_factory=WebSocketConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
     zmq: ZMQConfig = field(default_factory=ZMQConfig)
     database: DatabaseConfig | None = None
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -108,6 +132,14 @@ def load_config(path: str | Path) -> Config:
     reconciliation = ReconciliationConfig(
         enabled=reconciliation_data.get("enabled", True),
         interval_seconds=reconciliation_data.get("interval_seconds", 30),
+    )
+
+    fill_recon_data = raw_config.get("fill_reconciliation", {})
+    fill_reconciliation = FillReconciliationConfig(
+        enabled=fill_recon_data.get("enabled", True),
+        interval_seconds=fill_recon_data.get("interval_seconds", 60),
+        lookback_seconds=fill_recon_data.get("lookback_seconds", 86400),
+        overlap_seconds=fill_recon_data.get("overlap_seconds", 30),
     )
 
     ws_data = raw_config.get("websocket", {})
@@ -143,11 +175,20 @@ def load_config(path: str | Path) -> Config:
             pool_max=db_data.get("pool_max", 10),
         )
 
+    metrics_data = raw_config.get("metrics", {})
+    metrics = MetricsConfig(
+        enabled=metrics_data.get("enabled", True),
+        host=metrics_data.get("host", "0.0.0.0"),
+        port=metrics_data.get("port", 9100),
+    )
+
     return Config(
         exchanges=exchanges,
         reconciliation=reconciliation,
+        fill_reconciliation=fill_reconciliation,
         websocket=websocket,
         portfolio=portfolio,
         zmq=zmq,
         database=database,
+        metrics=metrics,
     )

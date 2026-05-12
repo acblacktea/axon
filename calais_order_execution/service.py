@@ -1,17 +1,19 @@
 """Calais Execution Service - ZMQ-based execution engine for strategies."""
 
+import time
 from typing import Callable
 
 from calais_order_execution.config import Config
 from calais_order_execution.ems.ems_service import EMSService
-from calais_order_execution.models import Order, OrderRequest, Ticker
+from calais_order_execution.models import Fill, Order, OrderRequest, OrderStatus, Ticker
 from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.oms.oms_service import OMSService
-from calais_order_execution.repository import OrderRepository
+from calais_order_execution.repository import FillRepository, OrderRepository
 from calais_order_execution.repository.account_base import AccountRepository
 from calais_order_execution.repository.position_base import PositionRepository
 from calais_order_execution.transport.server import ZMQTransportServer
 from calais_order_execution.util.logging import get_logger
+from calais_order_execution.util.metrics import get_metrics
 
 logger = get_logger(__name__)
 
@@ -23,6 +25,7 @@ class CalaisExecutionService:
         repository: OrderRepository | None = None,
         account_repository: AccountRepository | None = None,
         position_repository: PositionRepository | None = None,
+        fill_repository: FillRepository | None = None,
     ):
         """Initialize execution service.
 
@@ -31,10 +34,18 @@ class CalaisExecutionService:
             repository: Order repository. Uses InMemoryOrderRepository if not provided.
             account_repository: Account repository. Uses InMemoryAccountRepository if not provided.
             position_repository: Position repository. Uses InMemoryPositionRepository if not provided.
+            fill_repository: Fill repository. Uses InMemoryFillRepository if not provided.
         """
         self._config = config
         self._ems = EMSService(config)
-        self._oms = OMSService(config, self._ems, repository, account_repository, position_repository)
+        self._oms = OMSService(
+            config,
+            self._ems,
+            repository,
+            account_repository,
+            position_repository,
+            fill_repository,
+        )
         self._transport = ZMQTransportServer(config.zmq, self)
         self._running = False
 
@@ -65,7 +76,17 @@ class CalaisExecutionService:
 
     async def place_order(self, exchange: str, request: OrderRequest) -> Order:
         """Place an order on the specified exchange."""
-        order = await self._ems.place_order(exchange, request)
+        metrics = get_metrics()
+        start = time.monotonic()
+        try:
+            order = await self._ems.place_order(exchange, request)
+        except Exception as e:
+            metrics.observe_order_submit_latency(exchange, time.monotonic() - start)
+            metrics.inc_order_place_failure(exchange, type(e).__name__)
+            raise
+        metrics.observe_order_submit_latency(exchange, time.monotonic() - start)
+        if order.status == OrderStatus.REJECTED:
+            metrics.inc_order_rejected(exchange, reason="exchange")
         if request.strategy_id:
             order.strategy_id = request.strategy_id
         await self._oms.add_order(order)
@@ -73,7 +94,16 @@ class CalaisExecutionService:
 
     async def cancel_order(self, exchange: str, order_id: str) -> bool:
         """Cancel an order."""
-        return await self._ems.cancel_order(exchange, order_id)
+        metrics = get_metrics()
+        start = time.monotonic()
+        try:
+            result = await self._ems.cancel_order(exchange, order_id)
+        except Exception as e:
+            metrics.observe_order_cancel_latency(exchange, time.monotonic() - start)
+            metrics.inc_order_cancel_failure(exchange, type(e).__name__)
+            raise
+        metrics.observe_order_cancel_latency(exchange, time.monotonic() - start)
+        return result
 
     async def get_order(self, order_id: str) -> Order | None:
         """Get order by ID from local cache."""
@@ -95,7 +125,18 @@ class CalaisExecutionService:
         price: float | None = None,
     ) -> Order:
         """Modify an existing order."""
-        return await self._ems.modify_order(exchange, order_id, amount=amount, price=price)
+        metrics = get_metrics()
+        start = time.monotonic()
+        try:
+            order = await self._ems.modify_order(
+                exchange, order_id, amount=amount, price=price
+            )
+        except Exception as e:
+            metrics.observe_order_modify_latency(exchange, time.monotonic() - start)
+            metrics.inc_order_modify_failure(exchange, type(e).__name__)
+            raise
+        metrics.observe_order_modify_latency(exchange, time.monotonic() - start)
+        return order
 
     def register_order_update_callback(self, callback: Callable[[Order], None]) -> None:
         """Register a callback for order updates."""
@@ -137,6 +178,32 @@ class CalaisExecutionService:
     def unregister_position_update_callback(self, callback: Callable[[list[Position]], None]) -> None:
         """Unregister a position callback."""
         self._oms.unregister_position_update_callback(callback)
+
+    # ============= Fills =============
+
+    async def get_fill(self, trade_id: str) -> Fill | None:
+        """Get a fill by trade_id."""
+        return await self._oms.get_fill(trade_id)
+
+    async def get_fills_by_order(self, order_id: str) -> list[Fill]:
+        """Get all fills for a given order_id, ordered by timestamp."""
+        return await self._oms.get_fills_by_order(order_id)
+
+    async def get_fills_by_strategy(self, strategy_id: str) -> list[Fill]:
+        """Get all fills for a given strategy_id, ordered by timestamp."""
+        return await self._oms.get_fills_by_strategy(strategy_id)
+
+    async def get_all_fills(self) -> list[Fill]:
+        """Get all known fills, ordered by timestamp."""
+        return await self._oms.get_all_fills()
+
+    def register_fill_update_callback(self, callback: Callable[[Fill], None]) -> None:
+        """Register a callback for new fills."""
+        self._oms.register_fill_update_callback(callback)
+
+    def unregister_fill_update_callback(self, callback: Callable[[Fill], None]) -> None:
+        """Unregister a fill callback."""
+        self._oms.unregister_fill_update_callback(callback)
 
     # ============= Context Manager =============
 

@@ -1,13 +1,17 @@
 """Order state management."""
 
 import asyncio
+import time
 from typing import Callable
 
-from calais_order_execution.models import Order
+from calais_order_execution.models import Order, OrderStatus
 from calais_order_execution.repository import InMemoryOrderRepository, OrderRepository
 from calais_order_execution.util.logging import get_logger
+from calais_order_execution.util.metrics import get_metrics
 
 logger = get_logger(__name__)
+
+_TERMINAL_STATUSES = {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}
 
 
 class OrderManager:
@@ -29,6 +33,9 @@ class OrderManager:
         self._update_callbacks: list[Callable[[Order], None]] = []
         self._async_update_callbacks: list[Callable[[Order], asyncio.Future]] = []
         self._lock = asyncio.Lock()
+        # Side state for latency metrics. Keyed by order_id.
+        self._submit_monotonic: dict[str, float] = {}
+        self._first_ws_seen: set[str] = set()
 
     async def add_order(self, order: Order) -> None:
         """Add a new order.
@@ -38,11 +45,18 @@ class OrderManager:
         """
         async with self._lock:
             self._order_cache[order.order_id] = order
+            self._submit_monotonic[order.order_id] = time.monotonic()
             try:
                 await self._repository.save(order)
             except Exception:
                 logger.exception(f"Failed to persist new order {order.order_id} to DB")
+                get_metrics().inc_db_write_failure("orders")
             logger.info(f"Added order {order.order_id}: {order.instrument} {order.side.value} {order.amount}")
+
+        # If the exchange already returned a terminal state synchronously
+        # (e.g. immediate-or-cancel filled/rejected), record fill latency now.
+        if order.status in _TERMINAL_STATUSES:
+            self._record_terminal_latency(order)
 
         await self._notify_update(order)
 
@@ -77,10 +91,16 @@ class OrderManager:
                 await self._repository.update(order)
             except Exception:
                 logger.exception(f"Failed to persist order {order.order_id} to DB")
+                get_metrics().inc_db_write_failure("orders")
             logger.info(
                 f"Updated order {order.order_id}: status={order.status.value}, "
                 f"filled={order.filled_amount}/{order.amount}"
             )
+
+        if order.status in _TERMINAL_STATUSES:
+            self._record_terminal_latency(order)
+        if order.status == OrderStatus.REJECTED:
+            get_metrics().inc_order_rejected(order.exchange, reason="exchange")
 
         await self._notify_update(order)
 
@@ -92,6 +112,17 @@ class OrderManager:
         Args:
             order: Order data from WebSocket.
         """
+        # First WS update for this order — the gap from add_order is the
+        # ack latency, i.e. how long it took the user.orders subscription
+        # to confirm the order we just placed via REST.
+        if order.order_id not in self._first_ws_seen:
+            self._first_ws_seen.add(order.order_id)
+            submit_t = self._submit_monotonic.get(order.order_id)
+            if submit_t is not None:
+                get_metrics().observe_order_ack_latency(
+                    order.exchange, time.monotonic() - submit_t
+                )
+
         await self.update_order(order)
 
     async def get_order(self, order_id: str) -> Order | None:
@@ -175,6 +206,19 @@ class OrderManager:
         """Unregister an async order update callback."""
         if callback in self._async_update_callbacks:
             self._async_update_callbacks.remove(callback)
+
+    def _record_terminal_latency(self, order: Order) -> None:
+        """Emit fill latency for an order's first transition to a terminal state."""
+        submit_t = self._submit_monotonic.pop(order.order_id, None)
+        # Drop ack-state side info too — order is done.
+        self._first_ws_seen.discard(order.order_id)
+        if submit_t is None:
+            return
+        get_metrics().observe_order_fill_latency(
+            order.exchange,
+            terminal_status=order.status.value,
+            seconds=time.monotonic() - submit_t,
+        )
 
     async def _notify_update(self, order: Order) -> None:
         """Notify all registered callbacks of order update.

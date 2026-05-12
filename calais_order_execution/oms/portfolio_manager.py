@@ -9,6 +9,7 @@ from calais_order_execution.repository.account_memory import InMemoryAccountRepo
 from calais_order_execution.repository.position_base import PositionRepository
 from calais_order_execution.repository.position_memory import InMemoryPositionRepository
 from calais_order_execution.util.logging import get_logger
+from calais_order_execution.util.metrics import get_metrics
 
 logger = get_logger(__name__)
 
@@ -45,11 +46,23 @@ class PortfolioManager:
                 logger.exception(
                     f"Failed to persist account {summary.exchange}/{summary.currency} to DB"
                 )
+                get_metrics().inc_db_write_failure("accounts")
             logger.debug(
                 f"Account update [{summary.exchange}/{summary.currency}]: "
                 f"equity={summary.equity}, balance={summary.balance}, "
                 f"available={summary.available_funds}"
             )
+
+        # maintenance_margin / equity is the standard liquidation-distance proxy.
+        # If equity is non-positive the account is already in trouble; emit 1.0
+        # to make the gauge alert-friendly rather than skip the sample.
+        if summary.equity > 0:
+            ratio = summary.maintenance_margin / summary.equity
+        else:
+            ratio = 1.0
+        get_metrics().set_account_margin_ratio(
+            summary.exchange, summary.currency, ratio
+        )
 
         for callback in self._account_callbacks:
             try:
@@ -95,6 +108,7 @@ class PortfolioManager:
                 await self._position_repo.replace_all(exchange, positions)
             except Exception:
                 logger.exception(f"Failed to persist positions for {exchange} to DB")
+                get_metrics().inc_db_write_failure("positions")
             logger.debug(f"Positions updated [{exchange}]: {len(positions)} instruments")
 
         for callback in self._position_callbacks:

@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from calais_order_execution.models import Order, OrderRequest
+from calais_order_execution.models import Fill, Order, OrderRequest
 from calais_order_execution.models.portfolio import AccountSummary, Position
 
 
@@ -112,6 +112,27 @@ class BaseEMS(ABC):
 
     async def get_positions(self, currency: str = "BTC", kind: str = "option") -> list[Position]:
         """Get positions for a currency and kind. Override in subclass."""
+        raise NotImplementedError
+
+    async def get_user_trades_since(
+        self,
+        currency: str,
+        since_ms: int,
+        kind: str = "any",
+    ) -> list[Fill]:
+        """Fetch user trades with timestamp >= since_ms via REST.
+
+        Used by the fill reconciler to recover from missed WS trade messages.
+        Implementations should paginate until exhausted.
+
+        Args:
+            currency: Currency to query (e.g., "BTC").
+            since_ms: Inclusive lower bound on trade timestamp (epoch ms).
+            kind: Instrument kind filter ("option", "future", "any").
+
+        Returns:
+            Fills ordered by timestamp ascending.
+        """
         raise NotImplementedError
 
     async def __aenter__(self) -> "BaseEMS":

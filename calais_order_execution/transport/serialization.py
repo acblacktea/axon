@@ -13,6 +13,7 @@ from typing import Any, Type, TypeVar, get_type_hints
 from calais_order_execution.models.order import Order, OrderRequest, Ticker
 from calais_order_execution.models.messages import Command, Response, Event
 from calais_order_execution.models.portfolio import AccountSummary, Position
+from calais_order_execution.models.fill import Fill
 
 T = TypeVar("T")
 
@@ -84,6 +85,7 @@ serialize_order_request = serialize
 serialize_ticker = serialize
 serialize_account_summary = serialize
 serialize_position = serialize
+serialize_fill = serialize
 
 
 def deserialize_order(data: dict[str, Any]) -> Order:
@@ -104,6 +106,10 @@ def deserialize_account_summary(data: dict[str, Any]) -> AccountSummary:
 
 def deserialize_position(data: dict[str, Any]) -> Position:
     return deserialize(Position, data)
+
+
+def deserialize_fill(data: dict[str, Any]) -> Fill:
+    return deserialize(Fill, data)
 
 
 # ============= Protocol Messages (bytes for ZMQ) =============

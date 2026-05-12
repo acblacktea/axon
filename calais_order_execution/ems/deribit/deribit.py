@@ -6,10 +6,11 @@ from typing import Any
 
 from calais_order_execution.config import ExchangeConfig
 from calais_order_execution.ems.base import BaseEMS
-from calais_order_execution.models import Order, OrderRequest, OrderSide, OrderStatus, OrderType, Ticker
+from calais_order_execution.models import Fill, Liquidity, Order, OrderRequest, OrderSide, OrderStatus, OrderType, Ticker
 from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.util import AsyncHttpClient
 from calais_order_execution.util.logging import get_logger
+from calais_order_execution.util.metrics import get_metrics
 
 logger = get_logger(__name__)
 
@@ -68,15 +69,32 @@ class DeribitEMS(BaseEMS):
 
     async def _public_request(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Make a public API request."""
-        async with await self._http.get(path, params=params) as response:
-            return await self._parse_response(response)
+        return await self._timed_request(path, headers=None, params=params)
 
     async def _private_request(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Make a private (authenticated) API request."""
         await self._ensure_authenticated()
         headers = {"Authorization": f"Bearer {self._access_token}"}
-        async with await self._http.get(path, params=params, headers=headers) as response:
-            return await self._parse_response(response)
+        return await self._timed_request(path, headers=headers, params=params)
+
+    async def _timed_request(
+        self,
+        path: str,
+        headers: dict[str, str] | None,
+        params: dict[str, Any] | None,
+    ) -> Any:
+        """REST request wrapper that emits latency + error metrics per endpoint."""
+        metrics = get_metrics()
+        start = time.monotonic()
+        try:
+            async with await self._http.get(path, params=params, headers=headers) as response:
+                result = await self._parse_response(response)
+            metrics.observe_ems_request("deribit", path, time.monotonic() - start)
+            return result
+        except Exception as e:
+            metrics.observe_ems_request("deribit", path, time.monotonic() - start)
+            metrics.inc_ems_request_error("deribit", path, type(e).__name__)
+            raise
 
     async def place_order(self, request: OrderRequest) -> Order:
         """Place a new order on Deribit."""
@@ -216,6 +234,92 @@ class DeribitEMS(BaseEMS):
             "private/get_positions", {"currency": currency, "kind": kind}
         )
         return [self._parse_position(p) for p in result]
+
+    async def get_user_trades_since(
+        self,
+        currency: str,
+        since_ms: int,
+        kind: str = "any",
+    ) -> list[Fill]:
+        """Fetch user trades since `since_ms` via Deribit REST.
+
+        Paginates using `get_user_trades_by_currency_and_time` with ascending
+        sort. Stops when the API reports `has_more=false` or returns no rows.
+        """
+        end_ms = int(time.time() * 1000) + 1000
+        page_size = 1000
+        cursor = since_ms
+        fills: list[Fill] = []
+        # Cap pagination defensively in case the API misreports has_more.
+        for _ in range(1000):
+            params: dict[str, Any] = {
+                "currency": currency,
+                "kind": kind,
+                "start_timestamp": cursor,
+                "end_timestamp": end_ms,
+                "count": page_size,
+                "sorting": "asc",
+                "include_old": True,
+            }
+            try:
+                result = await self._private_request(
+                    "private/get_user_trades_by_currency_and_time", params
+                )
+            except Exception as e:
+                logger.error(f"get_user_trades_since {currency}/{kind} failed: {e}")
+                break
+
+            trades = result.get("trades", []) if isinstance(result, dict) else []
+            if not trades:
+                break
+
+            for raw in trades:
+                try:
+                    fills.append(self._parse_fill(raw))
+                except Exception as e:
+                    logger.error(f"Failed to parse trade: {e}, raw: {raw}")
+
+            if not (isinstance(result, dict) and result.get("has_more")):
+                break
+
+            last_ts = trades[-1].get("timestamp")
+            if last_ts is None:
+                break
+            # Advance cursor past the last seen trade. Deribit's start_timestamp
+            # is inclusive, so adding 1 ms avoids re-fetching the boundary trade.
+            # If multiple trades share the same ms, save() dedupes by trade_id.
+            new_cursor = int(last_ts) + 1
+            if new_cursor <= cursor:
+                break
+            cursor = new_cursor
+
+        return fills
+
+    def _parse_fill(self, data: dict[str, Any]) -> Fill:
+        """Parse a Deribit trade dict into a Fill model."""
+        liquidity = Liquidity.TAKER if data.get("liquidity") == "T" else Liquidity.MAKER
+        ts = data.get("timestamp")
+        timestamp = (
+            datetime.fromtimestamp(ts / 1000) if ts is not None else datetime.utcnow()
+        )
+        return Fill(
+            trade_id=str(data["trade_id"]),
+            order_id=str(data["order_id"]),
+            exchange="deribit",
+            instrument=data["instrument_name"],
+            side=OrderSide.BUY if data["direction"] == "buy" else OrderSide.SELL,
+            amount=data.get("amount", 0),
+            price=data.get("price", 0),
+            fee=data.get("fee", 0),
+            fee_currency=data.get("fee_currency", ""),
+            liquidity=liquidity,
+            timestamp=timestamp,
+            index_price=data.get("index_price"),
+            mark_price=data.get("mark_price"),
+            iv=data.get("iv"),
+            profit_loss=data.get("profit_loss"),
+            label=data.get("label"),
+        )
 
     def _parse_account_summary(self, data: dict[str, Any]) -> AccountSummary:
         """Parse Deribit account summary response."""

@@ -3,13 +3,17 @@
 from datetime import datetime
 from typing import Any
 
+import time
+
 from calais_order_execution.config import ExchangeConfig, PortfolioConfig, WebSocketConfig
-from calais_order_execution.models import Liquidity, Order, OrderSide, OrderStatus, OrderType
+from calais_order_execution.models import Fill, Liquidity, Order, OrderSide, OrderStatus, OrderType
 from calais_order_execution.models.portfolio import AccountSummary
 from calais_order_execution.oms.base import BaseOMS
+from calais_order_execution.oms.fill_manager import FillManager
 from calais_order_execution.oms.order_manager import OrderManager
 from calais_order_execution.oms.portfolio_manager import PortfolioManager
 from calais_order_execution.util.logging import get_logger
+from calais_order_execution.util.metrics import get_metrics
 
 logger = get_logger(__name__)
 
@@ -27,6 +31,7 @@ class DeribitOMS(BaseOMS):
         ws_config: WebSocketConfig | None = None,
         portfolio_manager: PortfolioManager | None = None,
         portfolio_config: PortfolioConfig | None = None,
+        fill_manager: FillManager | None = None,
     ):
         """Initialize Deribit WebSocket.
 
@@ -36,11 +41,13 @@ class DeribitOMS(BaseOMS):
             ws_config: WebSocket configuration.
             portfolio_manager: PortfolioManager for account/position updates.
             portfolio_config: Portfolio configuration (currencies to subscribe).
+            fill_manager: FillManager for trade execution persistence.
         """
         super().__init__(order_manager, ws_config)
         self._exchange_config = exchange_config
         self._portfolio_manager = portfolio_manager
         self._portfolio_config = portfolio_config
+        self._fill_manager = fill_manager
 
     @property
     def exchange_name(self) -> str:
@@ -217,13 +224,40 @@ class DeribitOMS(BaseOMS):
         if message.get("method") == "subscription":
             params = message.get("params", {})
             channel = params.get("channel", "")
+            data = params.get("data")
+
+            self._observe_message_age(channel, data)
 
             if "user.orders" in channel:
-                await self._handle_order_update(params.get("data", {}))
+                await self._handle_order_update(data or {})
             elif "user.trades" in channel:
-                await self._handle_trade_update(params.get("data", []))
+                await self._handle_trade_update(data or [])
             elif "user.portfolio" in channel:
-                await self._handle_portfolio_update(params.get("data", {}))
+                await self._handle_portfolio_update(data or {})
+
+    def _observe_message_age(self, channel: str, data: Any) -> None:
+        """Emit ws_message_age_seconds for the first record in the payload.
+
+        Channel category labels (orders/trades/portfolio) keep cardinality
+        low; the per-instrument detail is irrelevant for staleness alerting.
+        """
+        if data is None:
+            return
+        # Trade subscriptions deliver a list; orders/portfolio deliver a dict.
+        record = data[0] if isinstance(data, list) and data else data
+        if not isinstance(record, dict):
+            return
+        ts = record.get("timestamp") or record.get("last_update_timestamp")
+        if ts is None:
+            return
+        age = time.time() - (ts / 1000)
+        category = (
+            "trades" if "user.trades" in channel
+            else "orders" if "user.orders" in channel
+            else "portfolio" if "user.portfolio" in channel
+            else "other"
+        )
+        get_metrics().observe_ws_message_age("deribit", category, age)
 
     async def _handle_order_update(self, data: dict[str, Any]) -> None:
         """Handle order update from subscription.
@@ -254,33 +288,62 @@ class DeribitOMS(BaseOMS):
     async def _handle_trade_update(self, data: list[dict[str, Any]]) -> None:
         """Handle trade update from subscription.
 
-        Only updates liquidity (maker/taker) status. Other fields like filled_amount,
-        average_price, and status are updated via order subscription to avoid timing issues.
+        Parses each trade into a Fill (persisted via FillManager) and also
+        updates the parent Order's liquidity flag if it was a taker fill.
+        Order status / filled_amount / average_price still come from the
+        order subscription to avoid timing races.
 
         Args:
             data: List of trade data from WebSocket.
         """
         for trade in data:
             try:
-                order_id = trade.get("order_id")
-                liquidity = trade.get("liquidity")  # "M" for maker, "T" for taker
+                fill = self._parse_fill(trade)
+            except Exception as e:
+                logger.error(f"Failed to parse trade: {e}, trade: {trade}")
+                continue
 
-                if not order_id:
-                    continue
-
-                # Only update liquidity if taker
-                if liquidity == "T":
-                    order = await self._order_manager.get_order(order_id)
-                    if not order:
-                        logger.warning(f"Trade for unknown order {order_id}")
-                        continue
-
+            order = await self._order_manager.get_order(fill.order_id)
+            if order is None:
+                logger.warning(f"Trade for unknown order {fill.order_id}")
+            else:
+                fill.strategy_id = order.strategy_id
+                if fill.liquidity == Liquidity.TAKER and order.liquidity != Liquidity.TAKER:
                     order.liquidity = Liquidity.TAKER
-                    logger.debug(f"Trade update: order {order_id} marked as taker")
+                    logger.debug(f"Trade update: order {fill.order_id} marked as taker")
                     await self._order_manager.update_from_ws(order)
 
-            except Exception as e:
-                logger.error(f"Failed to handle trade update: {e}, trade: {trade}")
+            if self._fill_manager is not None:
+                try:
+                    await self._fill_manager.add_fill(fill)
+                except Exception as e:
+                    logger.error(f"Failed to record fill {fill.trade_id}: {e}")
+
+    def _parse_fill(self, data: dict[str, Any]) -> Fill:
+        """Parse a Deribit trade dict into a Fill model."""
+        liquidity = Liquidity.TAKER if data.get("liquidity") == "T" else Liquidity.MAKER
+        ts = data.get("timestamp")
+        timestamp = (
+            datetime.fromtimestamp(ts / 1000) if ts is not None else datetime.utcnow()
+        )
+        return Fill(
+            trade_id=str(data["trade_id"]),
+            order_id=str(data["order_id"]),
+            exchange="deribit",
+            instrument=data["instrument_name"],
+            side=OrderSide.BUY if data["direction"] == "buy" else OrderSide.SELL,
+            amount=data.get("amount", 0),
+            price=data.get("price", 0),
+            fee=data.get("fee", 0),
+            fee_currency=data.get("fee_currency", ""),
+            liquidity=liquidity,
+            timestamp=timestamp,
+            index_price=data.get("index_price"),
+            mark_price=data.get("mark_price"),
+            iv=data.get("iv"),
+            profit_loss=data.get("profit_loss"),
+            label=data.get("label"),
+        )
 
     async def _handle_portfolio_update(self, data: dict[str, Any]) -> None:
         """Handle portfolio (account summary) update from WS subscription."""
