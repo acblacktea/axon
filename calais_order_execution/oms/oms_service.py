@@ -12,7 +12,7 @@ from calais_order_execution.oms.fill_reconciler import FillReconciler
 from calais_order_execution.oms.order_manager import OrderManager
 from calais_order_execution.oms.portfolio_manager import PortfolioManager
 from calais_order_execution.oms.position_refresher import PositionRefresher
-from calais_order_execution.oms.reconciler import OrderReconciler
+from calais_order_execution.oms.order_reconciler import OrderReconciler
 from calais_order_execution.repository import (
     FillRepository,
     InMemoryOrderRepository,
@@ -53,7 +53,7 @@ class OMSService:
         self._repository = repository or InMemoryOrderRepository()
 
         self._oms_ws: dict[str, WebSocketBase] = {}
-        self._reconcilers: dict[str, OrderReconciler] = {}
+        self._order_reconcilers: dict[str, OrderReconciler] = {}
         self._position_refreshers: dict[str, PositionRefresher] = {}
         self._fill_reconcilers: dict[str, FillReconciler] = {}
         self._order_manager = OrderManager(self._repository)
@@ -83,7 +83,7 @@ class OMSService:
                 # Reconciler
                 ems = self._ems_service.get(name)
                 if ems:
-                    self._reconcilers[name] = OrderReconciler(
+                    self._order_reconcilers[name] = OrderReconciler(
                         ems,
                         self._order_manager,
                         self._config.reconciliation,
@@ -112,7 +112,7 @@ class OMSService:
             logger.info(f"Connected OMS WebSocket: {name}")
 
         # Start reconcilers
-        for name, reconciler in self._reconcilers.items():
+        for name, reconciler in self._order_reconcilers.items():
             await reconciler.start()
             logger.info(f"Started reconciler: {name}")
 
@@ -139,7 +139,7 @@ class OMSService:
             logger.info(f"Stopped position refresher: {name}")
 
         # Stop reconcilers
-        for name, reconciler in self._reconcilers.items():
+        for name, reconciler in self._order_reconcilers.items():
             await reconciler.stop()
             logger.info(f"Stopped reconciler: {name}")
 
