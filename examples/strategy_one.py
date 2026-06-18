@@ -18,6 +18,7 @@ from calais_order_execution.models import (
     Order,
     OrderRequest,
     OrderSide,
+    OrderStatus,
     OrderType,
     Position,
 )
@@ -27,7 +28,7 @@ init_logging(console_output=True)
 logger = get_logger(__name__)
 
 EXCHANGE = "deribit"
-INSTRUMENT = "BTC-27MAR26-70000-C"
+INSTRUMENT = "BTC-25SEP26-260000-P"
 TICK_SIZE = 0.0005
 
 
@@ -95,14 +96,14 @@ class Strategy:
 
         while True:
             try:
-                # Buy taker (at ask price to guarantee fill)
+                # Buy at bid price (买一)
                 ticker = await self._client.get_ticker(EXCHANGE, INSTRUMENT)
-                ask = ticker.best_ask_price
-                if not ask or ask <= 0:
-                    ask = (ticker.mark_price or 0.05) * 1.5
-                buy_price = round(ask / TICK_SIZE) * TICK_SIZE
+                bid = ticker.best_bid_price
+                if not bid or bid <= 0:
+                    bid = (ticker.mark_price or 0.05) * 0.95
+                buy_price = round(bid / TICK_SIZE) * TICK_SIZE
 
-                logger.info(f"[S1] BUY taker 0.1 @ {buy_price}")
+                logger.info(f"[S1] BUY 0.1 @ {buy_price} (bid)")
                 buy_order = await self._client.place_order(EXCHANGE, OrderRequest(
                     instrument=INSTRUMENT,
                     side=OrderSide.BUY,
@@ -113,28 +114,13 @@ class Strategy:
                 ))
                 logger.info(f"[S1] Buy placed id={buy_order.order_id}")
 
-                # Wait 3s
-                await asyncio.sleep(3)
+                # Wait 2s then cancel
+                await asyncio.sleep(2)
+                buy_latest = await self._client.get_order(buy_order.order_id)
+                if buy_latest and buy_latest.status not in (OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED):
+                    logger.info(f"[S1] Buy not filled, cancelling {buy_order.order_id}")
+                    await self._client.cancel_order(EXCHANGE, buy_order.order_id)
 
-                # Sell taker (at bid price to guarantee fill)
-                ticker = await self._client.get_ticker(EXCHANGE, INSTRUMENT)
-                bid = ticker.best_bid_price
-                if not bid or bid <= 0:
-                    bid = (ticker.mark_price or 0.05) * 0.5
-                sell_price = round(bid / TICK_SIZE) * TICK_SIZE
-                if sell_price <= 0:
-                    sell_price = TICK_SIZE
-
-                logger.info(f"[S1] SELL taker 0.1 @ {sell_price}")
-                sell_order = await self._client.place_order(EXCHANGE, OrderRequest(
-                    instrument=INSTRUMENT,
-                    side=OrderSide.SELL,
-                    amount=0.1,
-                    order_type=OrderType.LIMIT,
-                    price=sell_price,
-                    label="s1_sell",
-                ))
-                logger.info(f"[S1] Sell placed id={sell_order.order_id}")
 
             except Exception as e:
                 logger.error(f"[S1] Error: {e}")

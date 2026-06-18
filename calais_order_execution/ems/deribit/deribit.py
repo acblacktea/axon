@@ -182,7 +182,7 @@ class DeribitEMS(BaseEMS):
         except Exception as e:
             logger.error(f"Failed to get open orders: {e}")
             return []
-
+        
     async def get_open_orders_by_currency(self, currency: str = "BTC", kind: str = "option") -> list[Order]:
         """Get all open orders for a currency and kind.
 
@@ -259,7 +259,7 @@ class DeribitEMS(BaseEMS):
                 "end_timestamp": end_ms,
                 "count": page_size,
                 "sorting": "asc",
-                "include_old": True,
+                "include_old": "true",
             }
             try:
                 result = await self._private_request(

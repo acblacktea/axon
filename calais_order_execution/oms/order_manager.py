@@ -60,6 +60,10 @@ class OrderManager:
 
         await self._notify_update(order)
 
+        # Remove terminal orders from cache to prevent memory leak
+        if order.status in _TERMINAL_STATUSES:
+            self._order_cache.pop(order.order_id, None)
+
     async def update_order(self, order: Order) -> None:
         """Update an existing order.
 
@@ -103,6 +107,10 @@ class OrderManager:
             get_metrics().inc_order_rejected(order.exchange, reason="exchange")
 
         await self._notify_update(order)
+
+        # Remove terminal orders from cache to prevent memory leak
+        if order.status in _TERMINAL_STATUSES:
+            self._order_cache.pop(order.order_id, None)
 
     async def update_from_ws(self, order: Order) -> None:
         """Update order from WebSocket message.

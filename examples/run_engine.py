@@ -19,6 +19,7 @@ from calais_order_execution.repository.account_postgres import PostgresAccountRe
 from calais_order_execution.repository.position_postgres import PostgresPositionRepository
 from calais_order_execution.service import CalaisExecutionService
 from calais_order_execution.util.logging import get_logger, init_logging
+from calais_order_execution.util.metrics import init_metrics
 
 init_logging(console_output=True)
 logger = get_logger(__name__)
@@ -26,6 +27,13 @@ logger = get_logger(__name__)
 
 async def main(config_path: str) -> None:
     config = load_config(config_path)
+
+    init_metrics(config.metrics)
+    if config.metrics.enabled:
+        logger.info(
+            f"Metrics endpoint listening on "
+            f"http://{config.metrics.host}:{config.metrics.port}/metrics"
+        )
 
     order_repo = None
     account_repo = None
