@@ -14,6 +14,7 @@ class ExchangeConfig:
     env: str  # "testnet" or "production"
     api_key: str
     api_secret: str
+    passphrase: str = ""  # Required by OKX
 
     @property
     def is_testnet(self) -> bool:
@@ -126,6 +127,7 @@ def load_config(path: str | Path) -> Config:
             env=exchange_data.get("env", "testnet"),
             api_key=exchange_data.get("api_key", ""),
             api_secret=exchange_data.get("api_secret", ""),
+            passphrase=exchange_data.get("passphrase", ""),
         )
 
     reconciliation_data = raw_config.get("reconciliation", {})

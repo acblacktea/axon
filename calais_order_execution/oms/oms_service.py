@@ -6,9 +6,12 @@ from calais_order_execution.config import Config
 from calais_order_execution.ems.ems_service import EMSService
 from calais_order_execution.models import Fill, Order
 from calais_order_execution.models.portfolio import AccountSummary, Position
+from calais_order_execution.oms.binance import BinanceOMS
+from calais_order_execution.oms.bybit import BybitOMS
 from calais_order_execution.oms.deribit import DeribitOMS
 from calais_order_execution.oms.fill_manager import FillManager
 from calais_order_execution.oms.fill_reconciler import FillReconciler
+from calais_order_execution.oms.okx import OkxOMS
 from calais_order_execution.oms.order_manager import OrderManager
 from calais_order_execution.oms.portfolio_manager import PortfolioManager
 from calais_order_execution.oms.position_refresher import PositionRefresher
@@ -65,44 +68,55 @@ class OMSService:
 
         self._init_clients()
 
+    def _create_ws(self, name: str, exchange_config) -> WebSocketBase | None:
+        """Create an OMS WebSocket client for the given exchange."""
+        common_kwargs = dict(
+            order_manager=self._order_manager,
+            exchange_config=exchange_config,
+            ws_config=self._config.websocket,
+            portfolio_manager=self._portfolio_manager,
+            portfolio_config=self._config.portfolio,
+            fill_manager=self._fill_manager,
+        )
+        if name == "deribit":
+            return DeribitOMS(**common_kwargs)
+        elif name == "bybit":
+            return BybitOMS(**common_kwargs)
+        elif name == "okx":
+            return OkxOMS(**common_kwargs)
+        elif name == "binance":
+            ems = self._ems_service.get(name)
+            return BinanceOMS(**common_kwargs, ems=ems)
+        return None
+
     def _init_clients(self) -> None:
         """Initialize OMS WebSocket clients and reconcilers."""
         for name, exchange_config in self._config.exchanges.items():
-            if name == "deribit":
-                # OMS WebSocket
-                ws = DeribitOMS(
-                    self._order_manager,
-                    exchange_config,
-                    self._config.websocket,
-                    portfolio_manager=self._portfolio_manager,
-                    portfolio_config=self._config.portfolio,
-                    fill_manager=self._fill_manager,
-                )
-                self._oms_ws[name] = ws
-
-                # Reconciler
-                ems = self._ems_service.get(name)
-                if ems:
-                    self._order_reconcilers[name] = OrderReconciler(
-                        ems,
-                        self._order_manager,
-                        self._config.reconciliation,
-                    )
-                    # Position refresher
-                    self._position_refreshers[name] = PositionRefresher(
-                        ems,
-                        self._portfolio_manager,
-                        self._config.portfolio,
-                    )
-                    # Fill reconciler (REST fallback for trade WS)
-                    self._fill_reconcilers[name] = FillReconciler(
-                        ems,
-                        self._fill_manager,
-                        self._config.portfolio,
-                        self._config.fill_reconciliation,
-                    )
-            else:
+            ws = self._create_ws(name, exchange_config)
+            if ws is None:
                 logger.warning(f"Unsupported exchange for OMS: {name}")
+                continue
+
+            self._oms_ws[name] = ws
+
+            ems = self._ems_service.get(name)
+            if ems:
+                self._order_reconcilers[name] = OrderReconciler(
+                    ems,
+                    self._order_manager,
+                    self._config.reconciliation,
+                )
+                self._position_refreshers[name] = PositionRefresher(
+                    ems,
+                    self._portfolio_manager,
+                    self._config.portfolio,
+                )
+                self._fill_reconcilers[name] = FillReconciler(
+                    ems,
+                    self._fill_manager,
+                    self._config.portfolio,
+                    self._config.fill_reconciliation,
+                )
 
     async def start(self) -> None:
         """Start all OMS components."""

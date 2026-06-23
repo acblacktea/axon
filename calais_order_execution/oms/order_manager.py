@@ -44,6 +44,11 @@ class OrderManager:
             order: Order to add.
         """
         async with self._lock:
+            # Store with PENDING status regardless of what the exchange REST
+            # response returned, so that the first WS push (e.g. FILLED for a
+            # market order) is always detected as a real state change.
+            order.status = OrderStatus.PENDING
+            order.filled_amount = 0
             self._order_cache[order.order_id] = order
             self._submit_monotonic[order.order_id] = time.monotonic()
             try:
@@ -53,16 +58,8 @@ class OrderManager:
                 get_metrics().inc_db_write_failure("orders")
             logger.info(f"Added order {order.order_id}: {order.instrument} {order.side.value} {order.amount}")
 
-        # If the exchange already returned a terminal state synchronously
-        # (e.g. immediate-or-cancel filled/rejected), record fill latency now.
-        if order.status in _TERMINAL_STATUSES:
-            self._record_terminal_latency(order)
-
-        await self._notify_update(order)
-
-        # Remove terminal orders from cache to prevent memory leak
-        if order.status in _TERMINAL_STATUSES:
-            self._order_cache.pop(order.order_id, None)
+        # Do not notify here — order state updates are driven entirely by
+        # exchange WebSocket pushes (and reconciliation as fallback).
 
     async def update_order(self, order: Order) -> None:
         """Update an existing order.
@@ -75,13 +72,24 @@ class OrderManager:
             order: Order with updated state.
         """
         async with self._lock:
+            # Try cache first, fall back to DB
             existing = self._order_cache.get(order.order_id)
+            if existing is None:
+                existing = await self._repository.get(order.order_id)
+
             if existing and existing.updated_at > order.updated_at:
                 logger.warning(
                     f"Skipping stale update for order {order.order_id}: "
                     f"existing={existing.updated_at}, incoming={order.updated_at}"
                 )
                 return
+
+            # Check if state actually changed
+            state_changed = (
+                existing is None
+                or existing.status != order.status
+                or existing.filled_amount != order.filled_amount
+            )
 
             # Preserve fields from existing order if incoming doesn't have them
             if existing:
@@ -100,6 +108,16 @@ class OrderManager:
                 f"Updated order {order.order_id}: status={order.status.value}, "
                 f"filled={order.filled_amount}/{order.amount}"
             )
+
+        if not state_changed:
+            logger.debug(
+                f"Skipping duplicate update for order {order.order_id}: "
+                f"status={order.status.value}, filled={order.filled_amount}"
+            )
+            # Still evict terminal orders from cache
+            if order.status in _TERMINAL_STATUSES:
+                self._order_cache.pop(order.order_id, None)
+            return
 
         if order.status in _TERMINAL_STATUSES:
             self._record_terminal_latency(order)

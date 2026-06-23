@@ -2,7 +2,10 @@
 
 from calais_order_execution.config import Config
 from calais_order_execution.ems.base import BaseEMS
+from calais_order_execution.ems.binance import BinanceEMS
+from calais_order_execution.ems.bybit import BybitEMS
 from calais_order_execution.ems.deribit import DeribitEMS
+from calais_order_execution.ems.okx import OkxEMS
 from calais_order_execution.models import Order, OrderRequest, Ticker
 from calais_order_execution.models.portfolio import AccountSummary, Position
 from calais_order_execution.util.logging import get_logger
@@ -23,11 +26,19 @@ class EMSService:
         self._ems: dict[str, BaseEMS] = {}
         self._init_clients()
 
+    _EMS_FACTORIES: dict[str, type[BaseEMS]] = {
+        "deribit": DeribitEMS,
+        "bybit": BybitEMS,
+        "okx": OkxEMS,
+        "binance": BinanceEMS,
+    }
+
     def _init_clients(self) -> None:
         """Initialize EMS clients for configured exchanges."""
         for name, exchange_config in self._config.exchanges.items():
-            if name == "deribit":
-                self._ems[name] = DeribitEMS(exchange_config)
+            factory = self._EMS_FACTORIES.get(name)
+            if factory:
+                self._ems[name] = factory(exchange_config)
             else:
                 logger.warning(f"Unsupported exchange: {name}")
 

@@ -254,7 +254,11 @@ class WebSocketBase(ABC):
                     logger.warning("WebSocket receive timeout")
                     continue
 
-                message = json.loads(raw_message)
+                try:
+                    message = json.loads(raw_message)
+                except (json.JSONDecodeError, ValueError):
+                    # Some exchanges send plain text (e.g. OKX "pong")
+                    continue
 
                 # Handle response to pending request
                 request_id, result, error = self._parse_response(message)
