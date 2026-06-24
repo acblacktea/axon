@@ -33,6 +33,12 @@ class OrderManager:
         self._update_callbacks: list[Callable[[Order], None]] = []
         self._async_update_callbacks: list[Callable[[Order], asyncio.Future]] = []
         self._lock = asyncio.Lock()
+        # Guard against duplicate terminal notifications: once notified as
+        # FILLED/CANCELLED/REJECTED, never fire the callback again even if
+        # a stale DB read slips past the state_changed check.
+        # Maps order_id -> monotonic timestamp; entries older than TTL are purged.
+        self._notified_terminal: dict[str, float] = {}
+        self._notified_terminal_ttl = 300  # 5 minutes
         # Side state for latency metrics. Keyed by order_id.
         self._submit_monotonic: dict[str, float] = {}
         self._first_ws_seen: set[str] = set()
@@ -109,26 +115,43 @@ class OrderManager:
                 f"filled={order.filled_amount}/{order.amount}"
             )
 
-        if not state_changed:
-            logger.debug(
-                f"Skipping duplicate update for order {order.order_id}: "
-                f"status={order.status.value}, filled={order.filled_amount}"
-            )
-            # Still evict terminal orders from cache
+            if not state_changed or (
+                order.status in _TERMINAL_STATUSES
+                and order.order_id in self._notified_terminal
+            ):
+                if not state_changed:
+                    logger.debug(
+                        f"Skipping duplicate update for order {order.order_id}: "
+                        f"status={order.status.value}, filled={order.filled_amount}"
+                    )
+                else:
+                    logger.warning(
+                        f"Suppressing duplicate terminal notification for {order.order_id}"
+                    )
+                # Still evict terminal orders from cache
+                if order.status in _TERMINAL_STATUSES:
+                    self._order_cache.pop(order.order_id, None)
+                return
+
+            if order.status in _TERMINAL_STATUSES:
+                now = time.monotonic()
+                self._notified_terminal[order.order_id] = now
+                # Lazy purge: remove expired entries
+                expired = [
+                    oid for oid, ts in self._notified_terminal.items()
+                    if now - ts > self._notified_terminal_ttl
+                ]
+                for oid in expired:
+                    del self._notified_terminal[oid]
+                self._record_terminal_latency(order)
+            if order.status == OrderStatus.REJECTED:
+                get_metrics().inc_order_rejected(order.exchange, reason="exchange")
+
+            # Remove terminal orders from cache to prevent memory leak
             if order.status in _TERMINAL_STATUSES:
                 self._order_cache.pop(order.order_id, None)
-            return
-
-        if order.status in _TERMINAL_STATUSES:
-            self._record_terminal_latency(order)
-        if order.status == OrderStatus.REJECTED:
-            get_metrics().inc_order_rejected(order.exchange, reason="exchange")
 
         await self._notify_update(order)
-
-        # Remove terminal orders from cache to prevent memory leak
-        if order.status in _TERMINAL_STATUSES:
-            self._order_cache.pop(order.order_id, None)
 
     async def update_from_ws(self, order: Order) -> None:
         """Update order from WebSocket message.
