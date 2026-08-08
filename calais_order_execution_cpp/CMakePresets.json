@@ -1,0 +1,88 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Release (dev)",
+      "description": "Optimised, tests and benchmarks on. Portable codegen.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CALAIS_BUILD_TESTS": "ON",
+        "CALAIS_BUILD_BENCH": "ON"
+      }
+    },
+    {
+      "name": "prod",
+      "displayName": "Release (production host)",
+      "description": "Adds -march=native. Only valid when the build host and the deployment host have the same CPU -- pin this in CI to the production instance type.",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build-prod",
+      "cacheVariables": {
+        "CALAIS_NATIVE_ARCH": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Address + UB sanitizer",
+      "description": "Run before every merge. Benchmarks off -- they are far too slow instrumented and prove nothing here.",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CALAIS_ASAN": "ON",
+        "CALAIS_BUILD_BENCH": "OFF"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Thread sanitizer",
+      "description": "The one that matters for the lock-free ring buffers. A green TSan run is the only evidence the memory ordering is right.",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CALAIS_TSAN": "ON",
+        "CALAIS_BUILD_BENCH": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default", "configurePreset": "default" },
+    { "name": "prod", "configurePreset": "prod" },
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "tsan", "configurePreset": "tsan" }
+  ],
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 4 }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 2 }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 1 }
+    }
+  ]
+}
