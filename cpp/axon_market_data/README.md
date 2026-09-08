@@ -45,7 +45,7 @@ git clone https://github.com/microsoft/vcpkg.git ~/vcpkg
 ### 3. 配置与编译
 
 ```bash
-cd cpp
+cd cpp/axon_market_data
 cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=~/vcpkg/scripts/buildsystems/vcpkg.cmake
 cmake --build build
 ```
