@@ -1,0 +1,5 @@
+# 最小化配置 - 声明使用 setuptools 作为构建后端
+# 实际配置在 setup.py 中
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"

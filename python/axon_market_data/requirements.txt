@@ -1,0 +1,6 @@
+aiohttp>=3.8.0
+pyzmq
+pyyaml
+cryptography>=41.0.0
+prometheus_client>=0.16.0
+psutil>=5.9.0

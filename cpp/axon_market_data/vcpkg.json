@@ -1,0 +1,15 @@
+{
+  "name": "axon-market-data",
+  "version": "0.1.0",
+  "dependencies": [
+    "boost-beast",
+    "boost-asio",
+    "boost-url",
+    "simdjson",
+    "glaze",
+    "cppzmq",
+    "yaml-cpp",
+    "spdlog",
+    "openssl"
+  ]
+}

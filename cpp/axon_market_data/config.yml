@@ -1,0 +1,63 @@
+zmq:
+  pub_address: "tcp://*:5558"
+
+logging:
+  file: "logs/axon_market_data.log"   # rotated daily -> logs/axon_market_data_YYYY-MM-DD.log
+  level: info                   # trace / debug / info / warn / error / critical
+  max_files: 30                 # days of history to keep; 0 keeps everything
+
+exchanges:
+  - name: binance
+    market_type: spot
+    update_speed: "100ms"
+    depth_levels: 400           # levels per side; also drives the REST/channel request
+    subscriptions:
+      depth:
+        - ETH_USDT_SPOT
+      ticker:
+        - ETH_USDT_SPOT
+      kline:
+        - ETH_USDT_SPOT
+
+  - name: binance
+    market_type: usdt_futures
+    update_speed: "100ms"
+    subscriptions:
+      depth:
+        - ETH_USDT_PERP
+      kline:
+        - BTC_USDT_PERP
+
+  - name: okx
+    # OKX serves every instrument type from one endpoint; the symbol suffix
+    # (_SPOT / _PERP) decides the instId, so market_type is unused here.
+    market_type: spot
+    verify_checksum: false      # CRC32 book check (OKX currently sends 0)
+    subscriptions:
+      depth:
+        - ETH_USDT_SPOT
+      ticker:
+        - ETH_USDT_SPOT
+      kline:
+        - ETH_USDT_SPOT
+
+  - name: bybit
+    market_type: usdt_futures   # spot / usdt_futures (linear) / coin_futures (inverse)
+    subscriptions:
+      depth:
+        - ETH_USDT_PERP
+      ticker:
+        - ETH_USDT_PERP
+      kline:
+        - ETH_USDT_PERP
+
+  - name: hyperliquid
+    # Perps are named by base asset (ETH_USD_PERP -> ETH); spot keeps both
+    # sides (PURR_USDC_SPOT -> PURR/USDC). market_type is unused.
+    subscriptions:
+      depth:
+        - ETH_USD_PERP
+      ticker:
+        - ETH_USD_PERP
+      kline:
+        - ETH_USD_PERP

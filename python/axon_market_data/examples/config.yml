@@ -1,0 +1,26 @@
+# ── MarketDataServer config example ──────────────────────────────
+#
+# Usage:
+#   server = MarketDataServer(config_path="config.yml")
+#   await server.start()
+
+zmq:
+  pub_address: "tcp://*:5558"
+
+exchanges:
+  deribit:
+    testnet: false
+    orderbook_interval: "agg2"
+    max_symbols_per_connection: 400
+
+subscriptions:
+  deribit:
+    orderbook:
+      - BTC-25DEC26-100000-C
+      - ETH-25DEC26-5000-C
+    ticker:
+      - BTC-25DEC26-100000-C
+      - ETH-25DEC26-5000-C
+    index_price:
+      - btc_usd
+      - eth_usd

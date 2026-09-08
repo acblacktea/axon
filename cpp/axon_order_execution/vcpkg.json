@@ -1,0 +1,30 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "axon-order-execution",
+  "version": "0.1.0",
+  "description": "Low-latency C++ engine for Axon order execution",
+  "$comment": [
+    "NOT YET USED. The foundation layer builds with no package manager at all --",
+    "GoogleTest and the nlohmann single header are fetched by cmake/AxonDependencies.cmake.",
+    "",
+    "This manifest is the plan for the next phase, when the transport and exchange",
+    "layers land. Install vcpkg and configure with",
+    "  -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake",
+    "and AxonDependencies.cmake will find these via find_package before falling",
+    "back to fetching."
+  ],
+  "dependencies": [
+    { "name": "boost-asio", "version>=": "1.84.0", "$why": "event loop for cold-path coroutines (auth, reconnect, reconcile)" },
+    { "name": "boost-beast", "version>=": "1.84.0", "$why": "WebSocket + HTTP client; correctness first, replaceable behind ITransport once measured" },
+    { "name": "openssl", "$why": "TLS for wss://, and HMAC-SHA256 request signing" },
+    { "name": "cppzmq", "$why": "control plane only -- the hot path uses core/shm_ring.h" },
+    { "name": "nlohmann-json", "$why": "control-plane JSON; never on the hot path" },
+    { "name": "simdjson", "$why": "on-demand parsing for exchange feeds, once profiling justifies it" },
+    { "name": "libpqxx", "$why": "persistence, on a dedicated writer thread behind an SpscRing" },
+    { "name": "prometheus-cpp", "$why": "metrics backend, wrapped behind a project MetricsClient" },
+    { "name": "yaml-cpp", "$why": "config, cold path" },
+    { "name": "quill", "$why": "low-latency logging; spdlog is too heavy for the hot path" },
+    { "name": "gtest", "$why": "tests" }
+  ],
+  "builtin-baseline": ""
+}

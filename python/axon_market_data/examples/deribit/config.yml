@@ -1,0 +1,26 @@
+# ── DeribitOptionsDataService config ─────────────────────────────
+#
+# Server:  python examples/deribit/run_service.py
+# Client:  python examples/deribit/run_strategy.py
+
+zmq:
+  pub_address: "tcp://*:5557"
+
+metrics:
+  port: 9090
+  addr: "0.0.0.0"
+
+exchanges:
+  deribit:
+    testnet: false
+    orderbook_interval: "agg2"
+    max_symbols_per_connection: 400
+
+options:
+  currencies:
+    - BTC
+    - ETH
+  months: 3
+  orderbook_depth: 10000
+  auto_refresh: true
+  refresh_time_utc: [8, 15]

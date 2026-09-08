@@ -1,0 +1,25 @@
+# ── DeribitOptionsDataService config ─────────────────────────────
+#
+# Usage:
+#   service = DeribitOptionsDataService(config_path="deribit_options_config.yml")
+#   await service.start()
+
+zmq:
+  pub_address: "tcp://*:5557"
+
+exchanges:
+  deribit:
+    testnet: false
+    orderbook_interval: "agg2"
+    max_symbols_per_connection: 400
+
+# No subscriptions — DeribitOptionsDataService discovers options automatically
+
+options:
+  currencies:
+    - BTC
+    - ETH
+  months: 3
+  orderbook_depth: 10000
+  auto_refresh: true
+  refresh_time_utc: [8, 15]
