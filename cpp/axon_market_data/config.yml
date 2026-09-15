@@ -6,6 +6,11 @@ logging:
   level: info                   # trace / debug / info / warn / error / critical
   max_files: 30                 # days of history to keep; 0 keeps everything
 
+metrics:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9101                    # 9100 is node_exporter's on most hosts
+
 exchanges:
   - name: binance
     market_type: spot

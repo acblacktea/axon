@@ -1,5 +1,7 @@
 #include "axon_market_data/hyperliquid_adapter.hpp"
 
+#include "axon_market_data/metrics.hpp"
+
 #include <algorithm>
 
 namespace axon_market_data {
@@ -26,16 +28,18 @@ HyperliquidAdapter::HyperliquidAdapter(net::io_context& ioc,
 
     // One endpoint serves perps and spot; the coin name carries the market, so
     // market_type is unused here.
-    auto add_symbols = [&](const std::vector<std::string>& syms, const char* type) {
+    auto add_symbols = [&](const std::vector<std::string>& syms, DataType dt,
+                           const char* type) {
         for (auto& unified : syms) {
             auto coin = to_exchange_symbol(unified);
             sym_to_unified_[coin] = unified;
+            declare_subscription(dt, coin);
             subscriptions_.push_back({type, coin});
         }
     };
-    add_symbols(cfg_.subscriptions.depth,  "l2Book");
-    add_symbols(cfg_.subscriptions.ticker, "bbo");
-    add_symbols(cfg_.subscriptions.kline,  "candle");
+    add_symbols(cfg_.subscriptions.depth,  DataType::Depth,  "l2Book");
+    add_symbols(cfg_.subscriptions.ticker, DataType::Ticker, "bbo");
+    add_symbols(cfg_.subscriptions.kline,  DataType::Kline,  "candle");
 
     WebSocketClient::Config ws_cfg;
     ws_cfg.host          = "api.hyperliquid.xyz";
@@ -141,6 +145,7 @@ void HyperliquidAdapter::handle_message(std::string_view raw) {
     simdjson::padded_string padded(raw);
     auto doc_result = json_parser_.iterate(padded);
     if (doc_result.error()) {
+        get_metrics().inc_parse_error(exchange_name_);
         logger_->warn("[{}] JSON parse error", exchange_name_);
         return;
     }

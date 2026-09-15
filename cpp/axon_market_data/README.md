@@ -25,6 +25,7 @@
 - cppzmq — ZMQ 消息
 - yaml-cpp — 配置解析
 - spdlog — 日志
+- prometheus-cpp — 指标暴露
 - OpenSSL — TLS
 
 ## 构建
@@ -206,6 +207,117 @@ sed -E 's/\x1b\[[0-9;]*m//g' logs/*.log     # 为日志采集器剥离颜色
 历史清理在启动时执行,而不是完全交给 spdlog:`daily_file_sink` 只在轮转时清理,
 从不处理已经存在的积压,而且回溯到第一个缺失的日期就会停止 —— 否则只要停机一天,
 就会让比这个缺口更早的所有文件成为孤儿。
+
+## 可观测性 (Prometheus)
+
+```yaml
+metrics:
+  enabled: true
+  host: "0.0.0.0"
+  port: 9101                    # 9100 通常被 node_exporter 占了
+```
+
+`http://<host>:9101/metrics`。`enabled: false` 时每个上报调用都是空操作,业务代码里
+没有任何 `if (metrics_enabled)` 判断。
+
+端口绑不上会**直接抛异常退出**,而不是静默降级 —— 一个没起来的 metrics endpoint
+在面板上和"进程挂了"长得一模一样。
+
+### 延迟
+
+| 指标 | 标签 | 说明 |
+|---|---|---|
+| `axon_mds_message_age_seconds` | exchange, data_type | 交易所时间戳 → 本地发布完成。这是唯一能区分**"我们慢"和"交易所/链路慢"**的指标 |
+| `axon_mds_handler_duration_seconds` | exchange | 一个原始 WS 帧的全部开销:JSON 解析 + 订单簿更新 + 序列化 + ZMQ 发送 |
+| `axon_mds_publish_duration_seconds` | exchange, data_type | 其中的 glaze 序列化 + ZMQ 发送那一段 |
+| `axon_mds_ws_connect_duration_seconds` | exchange | DNS + TCP + TLS + WebSocket 握手 |
+| `axon_mds_rest_snapshot_duration_seconds` | exchange | Binance 订单簿快照的 REST 往返 |
+
+`handler` 减去 `publish` 就是解析加订单簿维护的成本。两个直方图的桶都从 10 µs 起,
+而不是 Prometheus 默认的 5 ms —— 用默认桶的话,健康状态下的每一个样本都会落进第一个桶,
+直方图除了"快"之外什么都说明不了。
+
+**有三个 topic 没有 `message_age` 数据,这是对的**:Binance 现货的 `bookTicker`、
+OKX 的 `candle1m`、Hyperliquid 的 `candle` 都不带交易所侧事件时间,适配器只能填本地时间。
+把这些报成 0 会在面板上画出一条平的 0 ms 线,读起来像是完美的链路,而不是"这一段根本
+测不到"。`venue_timestamp()` 通过 `timestamp == local_timestamp`(两者赋的是同一个值)
+识别这种情况并跳过采样 —— 序列缺失是诚实的,零值是撒谎。
+
+### 稳定性
+
+| 指标 | 标签 | 说明 |
+|---|---|---|
+| `axon_mds_ws_connected` | exchange | 连接中为 1。进程启动时就会发布为 0,否则首次连上之前这个序列是**缺失**的,而"缺失"读起来像"没配置"而不是"断了" |
+| `axon_mds_ws_reconnect_total` | exchange | 重连尝试次数 |
+| `axon_mds_ws_connect_failure_total` | exchange | 连接失败次数 |
+| `axon_mds_ws_session_duration_seconds` | exchange | 一条连接断开前活了多久。一周里"每天重连一次"和"每 30 秒抖一下"的重连速率是一样的,只有这个能把两者分开 |
+| `axon_mds_orderbook_resync_total` | exchange, reason | 本地订单簿重建次数,按原因拆分 |
+| `axon_mds_checksum_failure_total` | exchange | OKX CRC32 校验不匹配 |
+| `axon_mds_parse_error_total` | exchange | JSON 解析失败的帧 |
+| `axon_mds_rest_snapshot_failure_total` | exchange | REST 快照调用失败 |
+| `axon_mds_publish_failure_total` | exchange | ZMQ 发送失败或被丢弃 |
+
+`reason` 是枚举不是自由字符串:每个不同的标签值都会新建一条序列,一个拼错的字符串
+会把面板悄悄劈成两半,而不是报错。取值为 `sequence_gap` / `snapshot_too_old` /
+`checksum_mismatch` / `stream_restart` / `disconnect` / `snapshot_failed`,
+统一以"一个本地订单簿被重建"为单位计数。
+
+`publish_failure` 值得单独说:cppzmq 在 EAGAIN 时返回空 optional 而**不抛异常**,
+所以 PUB 高水位打满是一次静默丢弃。丢弃对 PUB socket 是对的行为(一个卡住的订阅者
+不能拖垮整条行情),但静默不是 —— 没有这个计数器,"订阅者不读了"和"交易所不推了"
+在面板上完全一样。
+
+### 订阅 topic
+
+| 指标 | 标签 | 说明 |
+|---|---|---|
+| `axon_mds_subscription` | exchange, data_type, symbol | 配置里要订阅的每个 topic 恒为 1 |
+| `axon_mds_events_total` | exchange, data_type, symbol | 该 topic 已发布的事件数 |
+| `axon_mds_last_event_timestamp_seconds` | exchange, data_type, symbol | 该 topic 最后一条事件的 Unix 时间 |
+| `axon_mds_undeclared_event_total` | exchange | 收到了没订阅过的 symbol 的数据 |
+
+**声明订阅这件事本身就是指标的一部分。** 只有事件计数器的话,一个死掉的 topic 和一个
+从来没配过的 topic 长得一样;有了 `subscription` 钉在 1 上而 `events_total` 不动,
+"订阅了但没数据"才成为一个可以告警的状态。
+
+`undeclared_event` 按交易所聚合而不带 symbol 标签,是刻意的:一个不带上限的标签会让
+行为异常的数据源把序列数撑爆,那是真正的线上事故,不只是噪音。
+
+### 标签基数与热路径
+
+两个直方图(`message_age`、`publish_duration`)**不带 symbol 标签**。一个直方图是
+每组标签十几条序列,带上 symbol 就等于把序列数乘以整张 symbol 表 —— 十个 symbol 无所谓,
+一千个就不行了。per-symbol 的信号留在 counter 和 gauge 上,它们各自只有一条序列。
+
+prometheus-cpp 每次上报都要对一组字符串对做哈希查表。按每条行情一次算,这个开销落在
+接收路径上,和它本来要测量的 JSON 解析是一个量级。所以**标签查找只在订阅时做一次**
+(`MetricsClient::declare_topic()` 返回一个 `TopicMetrics` 句柄),热路径上剩下的
+只有一次指针解引用和一次原子加。适配器在构造函数里建 stream 列表的同一个循环里
+调用 `declare_subscription()`,所以声明出来的东西和真正发到线上的订阅是一致的。
+
+### 几条常用查询
+
+```promql
+# 端到端延迟 p99，按交易所和数据类型
+histogram_quantile(0.99,
+  sum by (exchange, data_type, le) (rate(axon_mds_message_age_seconds_bucket[5m])))
+
+# 服务自身的处理耗时 p99（不含链路）
+histogram_quantile(0.99,
+  sum by (exchange, le) (rate(axon_mds_handler_duration_seconds_bucket[5m])))
+
+# 订阅了但已经 60 秒没有数据的 topic
+axon_mds_subscription == 1
+  unless on (exchange, data_type, symbol)
+  (time() - axon_mds_last_event_timestamp_seconds < 60)
+
+# 订单簿重建速率，按原因
+sum by (exchange, reason) (rate(axon_mds_orderbook_resync_total[5m]))
+
+# 连接抖动：一小时内连接存活时间的中位数
+histogram_quantile(0.5,
+  sum by (exchange, le) (rate(axon_mds_ws_session_duration_seconds_bucket[1h])))
+```
 
 ## ZMQ 消息格式
 

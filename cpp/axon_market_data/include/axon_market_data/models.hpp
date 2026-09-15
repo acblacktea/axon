@@ -229,6 +229,27 @@ struct MarketDataEvent {
     int64_t     timestamp = 0;
 };
 
+// The venue's own stamp on a payload, whatever shape it came in, or 0 when
+// there is no venue stamp to report.
+//
+// Several streams carry no exchange-side time at all: Binance's spot
+// bookTicker, OKX's candle1m and Hyperliquid's candle. For those the adapters
+// write `timestamp = now_ms()` and then `local_timestamp = timestamp`, from
+// the *same* value -- so an exact equality between the two is the marker that
+// the stamp is ours rather than the venue's. Reporting those as an age of
+// zero would put a flat 0 ms line on the dashboard for a leg that was never
+// measured, which reads as a perfect feed instead of an unmeasurable one.
+//
+// A real venue stamp that happens to equal our local millisecond is skipped
+// too, but that sample would have been 0 ms regardless, so nothing is lost.
+inline int64_t venue_timestamp(const EventData& data) {
+    return std::visit(
+        [](const auto& d) -> int64_t {
+            return d.timestamp == d.local_timestamp ? 0 : d.timestamp;
+        },
+        data);
+}
+
 // ---------------------------------------------------------------------------
 // Glaze metadata for JSON serialization (ZMQ output)
 // ---------------------------------------------------------------------------

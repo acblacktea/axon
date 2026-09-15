@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "axon_market_data/metrics.hpp"
+
 namespace axon_market_data {
 
 namespace beast = boost::beast;
@@ -73,6 +75,7 @@ BinanceAdapter::BinanceAdapter(net::io_context& ioc,
             auto exch = to_exchange_symbol(unified);
             sym_to_unified_[exch]    = unified;
             sym_to_exchange_[unified] = exch;
+            declare_subscription(dt, exch);
             all_streams_.push_back(stream_name(exch, dt));
             if (dt == DataType::Depth)
                 depth_exchange_symbols_.insert(exch);
@@ -159,6 +162,11 @@ void BinanceAdapter::on_ws_state_change(bool connected) {
         net::co_spawn(ioc_, subscribe_streams(), net::detached);
     } else {
         logger_->warn("[{}] disconnected, clearing sync state", exchange_name_);
+        // Every depth book is resynced from scratch on the next subscribe, so
+        // count one rebuild per symbol -- the same unit the gap counters use,
+        // which keeps the reason breakdown comparable.
+        for (size_t i = 0; i < depth_exchange_symbols_.size(); ++i)
+            get_metrics().inc_resync(exchange_name_, ResyncReason::Disconnect);
         syncing_.clear();
         awaiting_first_.clear();
         event_buffers_.clear();
@@ -200,6 +208,7 @@ void BinanceAdapter::handle_message(std::string_view raw) {
     simdjson::padded_string padded(raw);
     auto doc_result = json_parser_.iterate(padded);
     if (doc_result.error()) {
+        get_metrics().inc_parse_error(exchange_name_);
         logger_->warn("[{}] JSON parse error", exchange_name_);
         return;
     }
@@ -267,6 +276,7 @@ void BinanceAdapter::handle_depth_update(simdjson::ondemand::document& doc) {
             if (first_update_id > target) {
                 logger_->warn("[{}] {} snapshot too old: U={} > target={}",
                               exchange_name_, symbol, first_update_id, target);
+                get_metrics().inc_resync(exchange_name_, ResyncReason::SnapshotTooOld);
                 schedule_sync(symbol);
                 return;
             }
@@ -278,6 +288,7 @@ void BinanceAdapter::handle_depth_update(simdjson::ondemand::document& doc) {
                 if (prev_id != last_id) {
                     logger_->warn("[{}] {} sequence gap: pu={} expected={}",
                                   exchange_name_, symbol, prev_id, last_id);
+                    get_metrics().inc_resync(exchange_name_, ResyncReason::SequenceGap);
                     schedule_sync(symbol);
                     return;
                 }
@@ -285,6 +296,7 @@ void BinanceAdapter::handle_depth_update(simdjson::ondemand::document& doc) {
                 if (first_update_id > last_id + 1) {
                     logger_->warn("[{}] {} sequence gap: U={} expected<={}",
                                   exchange_name_, symbol, first_update_id, last_id + 1);
+                    get_metrics().inc_resync(exchange_name_, ResyncReason::SequenceGap);
                     schedule_sync(symbol);
                     return;
                 }
@@ -405,7 +417,10 @@ net::awaitable<void> BinanceAdapter::sync_orderbook(std::string exchange_symbol)
         target += "&limit=";
         target += std::to_string(rest_depth_limit_);
 
+        const double rest_start = steady_seconds();
         auto resp = co_await axon_market_data::http_get(rest_host_, target);
+        get_metrics().observe_rest_snapshot(exchange_name_,
+                                            steady_seconds() - rest_start);
         auto& body = resp.body;
 
         simdjson::padded_string padded(body);
@@ -480,6 +495,8 @@ net::awaitable<void> BinanceAdapter::sync_orderbook(std::string exchange_symbol)
                     logger_->warn("[{}] {} buffer starts past the snapshot "
                                   "(U={} > join={}), resyncing",
                                   exchange_name_, exchange_symbol, first_id, join_id);
+                    get_metrics().inc_resync(exchange_name_,
+                                             ResyncReason::SnapshotTooOld);
                     broken = true;
                     break;
                 }
@@ -491,6 +508,8 @@ net::awaitable<void> BinanceAdapter::sync_orderbook(std::string exchange_symbol)
                                   "(U={} pu={} after u={}), resyncing",
                                   exchange_name_, exchange_symbol,
                                   first_id, prev_id, chained_id);
+                    get_metrics().inc_resync(exchange_name_,
+                                             ResyncReason::SequenceGap);
                     broken = true;
                     break;
                 }
@@ -543,6 +562,8 @@ net::awaitable<void> BinanceAdapter::sync_orderbook(std::string exchange_symbol)
                       exchange_name_, exchange_symbol, synced_ob.sequence);
 
     } catch (const std::exception& e) {
+        get_metrics().inc_rest_snapshot_failure(exchange_name_);
+        get_metrics().inc_resync(exchange_name_, ResyncReason::SnapshotFailed);
         logger_->error("[{}] sync_orderbook {} failed: {}",
                        exchange_name_, exchange_symbol, e.what());
         syncing_.erase(exchange_symbol);

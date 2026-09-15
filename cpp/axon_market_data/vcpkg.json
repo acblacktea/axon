@@ -10,6 +10,7 @@
     "cppzmq",
     "yaml-cpp",
     "spdlog",
+    "prometheus-cpp",
     "openssl"
   ]
 }

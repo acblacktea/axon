@@ -26,9 +26,17 @@ struct ExchangeConfig {
     SubscriptionConfig subscriptions;
 };
 
+struct MetricsConfig {
+    bool        enabled = true;
+    std::string host    = "0.0.0.0";
+    int         port    = 9101;  // 9100 is node_exporter's, and the two are
+                                 // routinely scraped from the same host
+};
+
 struct AppConfig {
     std::string                pub_address = "tcp://*:5558";
     LogConfig                  logging;
+    MetricsConfig              metrics;
     std::vector<ExchangeConfig> exchanges;
 };
 

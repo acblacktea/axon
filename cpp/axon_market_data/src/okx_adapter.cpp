@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 
+#include "axon_market_data/metrics.hpp"
+
 namespace axon_market_data {
 
 // ---------------------------------------------------------------------------
@@ -47,17 +49,18 @@ OkxAdapter::OkxAdapter(net::io_context& ioc,
 
     // OKX exposes every instrument type on one endpoint; the instId carries
     // the market type, so there is no per-market host to pick.
-    auto add_symbols = [&](const std::vector<std::string>& syms,
+    auto add_symbols = [&](const std::vector<std::string>& syms, DataType dt,
                            const char* channel, std::vector<Channel>& out) {
         for (auto& unified : syms) {
             auto inst = to_exchange_symbol(unified);
             sym_to_unified_[inst] = unified;
+            declare_subscription(dt, inst);
             out.push_back({channel, inst});
         }
     };
-    add_symbols(cfg_.subscriptions.depth,  book_channel_, public_channels_);
-    add_symbols(cfg_.subscriptions.ticker, "bbo-tbt",  public_channels_);
-    add_symbols(cfg_.subscriptions.kline,  "candle1m", business_channels_);
+    add_symbols(cfg_.subscriptions.depth,  DataType::Depth,  book_channel_, public_channels_);
+    add_symbols(cfg_.subscriptions.ticker, DataType::Ticker, "bbo-tbt",  public_channels_);
+    add_symbols(cfg_.subscriptions.kline,  DataType::Kline,  "candle1m", business_channels_);
 
     if (!public_channels_.empty()) {
         ws_public_ = make_client("/ws/v5/public", exchange_name_,
@@ -144,6 +147,10 @@ void OkxAdapter::on_public_state_change(bool connected) {
         net::co_spawn(ioc_, subscribe(ws_public_, public_channels_), net::detached);
     } else {
         logger_->warn("[{}] disconnected, dropping local books", exchange_name_);
+        // Counted per book actually held, so the reason breakdown stays in one
+        // unit: number of local orderbooks that had to be rebuilt.
+        for (size_t i = 0; i < books_.size(); ++i)
+            get_metrics().inc_resync(exchange_name_, ResyncReason::Disconnect);
         books_.clear();
     }
 }
@@ -198,6 +205,7 @@ void OkxAdapter::handle_message(std::string_view raw) {
     simdjson::padded_string padded(raw);
     auto doc_result = json_parser_.iterate(padded);
     if (doc_result.error()) {
+        get_metrics().inc_parse_error(exchange_name_);
         logger_->warn("[{}] JSON parse error", exchange_name_);
         return;
     }
@@ -317,6 +325,9 @@ void OkxAdapter::handle_books(simdjson::ondemand::document& doc,
             if (cfg_.verify_checksum && has_checksum && !verify_checksum(fresh, checksum)) {
                 logger_->warn("[{}] {} snapshot checksum mismatch, re-subscribing",
                               exchange_name_, inst_id);
+                get_metrics().inc_checksum_failure(exchange_name_);
+                get_metrics().inc_resync(exchange_name_,
+                                         ResyncReason::ChecksumMismatch);
                 books_.erase(inst_id);
                 net::co_spawn(ioc_, resubscribe_book(inst_id), net::detached);
                 return;
@@ -333,6 +344,7 @@ void OkxAdapter::handle_books(simdjson::ondemand::document& doc,
         if (prev_seq_id != book.sequence) {
             logger_->warn("[{}] {} sequence gap: prevSeqId={} expected={}",
                           exchange_name_, inst_id, prev_seq_id, book.sequence);
+            get_metrics().inc_resync(exchange_name_, ResyncReason::SequenceGap);
             books_.erase(inst_id);
             net::co_spawn(ioc_, resubscribe_book(inst_id), net::detached);
             return;
@@ -345,6 +357,8 @@ void OkxAdapter::handle_books(simdjson::ondemand::document& doc,
         if (cfg_.verify_checksum && has_checksum && !verify_checksum(book, checksum)) {
             logger_->warn("[{}] {} checksum mismatch after update, re-subscribing",
                           exchange_name_, inst_id);
+            get_metrics().inc_checksum_failure(exchange_name_);
+            get_metrics().inc_resync(exchange_name_, ResyncReason::ChecksumMismatch);
             books_.erase(inst_id);
             net::co_spawn(ioc_, resubscribe_book(inst_id), net::detached);
             return;

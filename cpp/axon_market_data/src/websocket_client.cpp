@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <openssl/err.h>
 
+#include "axon_market_data/metrics.hpp"
+
 namespace axon_market_data {
 
 // ---------------------------------------------------------------------------
@@ -34,6 +36,10 @@ WebSocketClient::~WebSocketClient() { stop(); }
 void WebSocketClient::start() {
     if (running_) return;
     running_ = true;
+    // Publish the gauge as 0 before the first attempt. A series that only
+    // appears on the first successful connect is absent while the feed is
+    // down, and "absent" reads as "not configured" rather than "down".
+    get_metrics().set_ws_connected(cfg_.tag, false);
     logger_->info("[{}] starting WebSocket client -> {}:{}{}",
                   cfg_.tag, cfg_.host, cfg_.port, cfg_.path);
     net::co_spawn(ioc_, run(), net::detached);
@@ -88,12 +94,14 @@ net::awaitable<void> WebSocketClient::run() {
         net::co_spawn(ioc_, ping_loop(), net::detached);
         co_await read_loop();
     } catch (const boost::system::system_error& e) {
+        if (!connected_) get_metrics().inc_ws_connect_failure(cfg_.tag);
         // Filter out expected disconnection errors
         if (e.code() != net::error::operation_aborted &&
             e.code() != websocket::error::closed) {
             logger_->error("[{}] connection error: {}", cfg_.tag, e.what());
         }
     } catch (const std::exception& e) {
+        if (!connected_) get_metrics().inc_ws_connect_failure(cfg_.tag);
         logger_->error("[{}] error: {}", cfg_.tag, e.what());
     }
 
@@ -112,6 +120,11 @@ net::awaitable<void> WebSocketClient::run() {
 // ---------------------------------------------------------------------------
 
 net::awaitable<void> WebSocketClient::connect() {
+    // Covers DNS, TCP, TLS and the WebSocket upgrade as one number. Splitting
+    // them would be nicer but they fail as a unit here, and the useful
+    // question in production is "is the venue slow to let us in", not which
+    // of four stages owns the milliseconds.
+    const double connect_start = steady_seconds();
     auto executor = co_await net::this_coro::executor;
 
     // DNS resolve
@@ -153,6 +166,7 @@ net::awaitable<void> WebSocketClient::connect() {
     co_await ws_->async_handshake(host_header, cfg_.path, net::use_awaitable);
 
     connected_ = true;
+    get_metrics().observe_ws_connect(cfg_.tag, steady_seconds() - connect_start);
     notify_state(true);
     logger_->info("[{}] connected to {}", cfg_.tag, cfg_.host);
 }
@@ -168,7 +182,13 @@ net::awaitable<void> WebSocketClient::read_loop() {
 
         auto data = static_cast<const char*>(read_buf_.data().data());
         auto size = beast::buffer_bytes(read_buf_.data());
+
+        // Everything downstream of the socket -- parse, book update, serialize
+        // and ZMQ send -- happens inside this call, on this thread. Timing it
+        // here is the only place that sees the whole cost of one frame.
+        const double t0 = steady_seconds();
         on_message_(std::string_view(data, size));
+        get_metrics().observe_handler(cfg_.tag, steady_seconds() - t0);
     }
 }
 
@@ -208,6 +228,7 @@ net::awaitable<void> WebSocketClient::reconnect() {
 
     while (running_) {
         ++attempt;
+        get_metrics().inc_ws_reconnect(cfg_.tag);
         double delay = std::min(
             cfg_.reconnect_base_delay * (1 << std::min(attempt - 1, 5)),
             cfg_.reconnect_max_delay);
@@ -236,6 +257,7 @@ net::awaitable<void> WebSocketClient::reconnect() {
             co_await read_loop();
 
         } catch (const std::exception& e) {
+            if (!connected_) get_metrics().inc_ws_connect_failure(cfg_.tag);
             logger_->warn("[{}] reconnect attempt {} failed: {}",
                           cfg_.tag, attempt, e.what());
             connected_ = false;
@@ -258,6 +280,19 @@ net::awaitable<void> WebSocketClient::reconnect() {
 // ---------------------------------------------------------------------------
 
 void WebSocketClient::notify_state(bool connected) {
+    auto& metrics = get_metrics();
+    metrics.set_ws_connected(cfg_.tag, connected);
+
+    if (connected) {
+        session_start_ = steady_seconds();
+    } else if (session_start_ > 0.0) {
+        // Guarded by session_start_ rather than by the call site: the teardown
+        // paths call this more than once for a single drop, and an unguarded
+        // version would record a pile of zero-length sessions.
+        metrics.observe_ws_session(cfg_.tag, steady_seconds() - session_start_);
+        session_start_ = 0.0;
+    }
+
     if (on_state_change_) on_state_change_(connected);
 }
 

@@ -5,6 +5,7 @@
 
 #include "axon_market_data/config.hpp"
 #include "axon_market_data/logging.hpp"
+#include "axon_market_data/metrics.hpp"
 #include "axon_market_data/service.hpp"
 
 int main(int argc, char* argv[]) {
@@ -22,8 +23,15 @@ int main(int argc, char* argv[]) {
         spdlog::drop("mds");
         logger = axon_market_data::make_logger(cfg.logging);
 
+        // Before the adapters exist: their constructors declare every topic
+        // they subscribe to, and those calls need a live registry.
+        axon_market_data::init_metrics(cfg.metrics);
+
         logger->info("Loaded config: {} exchange(s), pub={}",
                      cfg.exchanges.size(), cfg.pub_address);
+        if (cfg.metrics.enabled)
+            logger->info("Metrics on http://{}:{}/metrics",
+                         cfg.metrics.host, cfg.metrics.port);
         if (!cfg.logging.file.empty())
             logger->info("Logging to {} (daily, keeping {} files), level={}",
                          cfg.logging.file, cfg.logging.max_files, cfg.logging.level);

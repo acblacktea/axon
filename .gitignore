@@ -28,6 +28,8 @@ ENV/
 # IDE
 .idea/
 .vscode/
+# clangd index, written next to compile_commands.json
+.cache/
 *.swp
 *.swo
 

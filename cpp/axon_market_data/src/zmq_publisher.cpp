@@ -2,6 +2,8 @@
 
 #include <glaze/glaze.hpp>
 
+#include "axon_market_data/metrics.hpp"
+
 namespace axon_market_data {
 
 ZmqPublisher::ZmqPublisher(const std::string& address,
@@ -59,9 +61,22 @@ void ZmqPublisher::publish(const MarketDataEvent& event) {
 
     // Send multi-part: [topic, json]
     try {
-        pub_->send(zmq::buffer(topic), zmq::send_flags::sndmore | zmq::send_flags::dontwait);
-        pub_->send(zmq::buffer(json), zmq::send_flags::dontwait);
+        // cppzmq returns an empty optional on EAGAIN rather than throwing, so
+        // a full high water mark is not an exception -- it is a silent drop.
+        // Dropping is the right behaviour for a PUB socket (one stalled
+        // subscriber must not stall the feed), but silent is not: without this
+        // counter a subscriber that stopped draining looks identical to a
+        // venue that went quiet.
+        auto topic_sent = pub_->send(
+            zmq::buffer(topic), zmq::send_flags::sndmore | zmq::send_flags::dontwait);
+        if (!topic_sent) {
+            get_metrics().inc_publish_failure(event.exchange);
+            return;
+        }
+        if (!pub_->send(zmq::buffer(json), zmq::send_flags::dontwait))
+            get_metrics().inc_publish_failure(event.exchange);
     } catch (const zmq::error_t& e) {
+        get_metrics().inc_publish_failure(event.exchange);
         if (e.num() != EAGAIN)
             logger_->warn("ZMQ send failed: {}", e.what());
     }

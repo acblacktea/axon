@@ -12,12 +12,14 @@ find_package(glaze CONFIG REQUIRED)
 find_package(cppzmq CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
+find_package(prometheus-cpp CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 add_executable(axon_market_data
     src/main.cpp
     src/config.cpp
     src/logging.cpp
+    src/metrics.cpp
     src/websocket_client.cpp
     src/http_client.cpp
     src/binance_adapter.cpp
@@ -37,6 +39,7 @@ target_link_libraries(axon_market_data PRIVATE
     cppzmq
     yaml-cpp::yaml-cpp
     spdlog::spdlog
+    prometheus-cpp::pull
     OpenSSL::SSL
     OpenSSL::Crypto
 )

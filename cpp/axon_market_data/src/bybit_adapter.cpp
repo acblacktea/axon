@@ -1,5 +1,7 @@
 #include "axon_market_data/bybit_adapter.hpp"
 
+#include "axon_market_data/metrics.hpp"
+
 #include <algorithm>
 
 namespace axon_market_data {
@@ -41,20 +43,21 @@ BybitAdapter::BybitAdapter(net::io_context& ioc,
     book_depth_   = bybit_topic_depth(cfg_.depth_levels);
     depth_levels_ = std::min<size_t>(cfg_.depth_levels, book_depth_);
 
-    auto add_symbols = [&](const std::vector<std::string>& syms,
+    auto add_symbols = [&](const std::vector<std::string>& syms, DataType dt,
                            const std::string& prefix) {
         for (auto& unified : syms) {
             auto exch = to_exchange_symbol(unified);
             sym_to_unified_[exch] = unified;
+            declare_subscription(dt, exch);
             topics_.push_back(prefix + exch);
         }
     };
-    add_symbols(cfg_.subscriptions.depth,
+    add_symbols(cfg_.subscriptions.depth, DataType::Depth,
                 "orderbook." + std::to_string(book_depth_) + ".");
     // Bybit's spot `tickers` topic carries no bid/ask, so the level-1 book is
     // the BBO source for every category.
-    add_symbols(cfg_.subscriptions.ticker, "orderbook.1.");
-    add_symbols(cfg_.subscriptions.kline,  "kline.1.");
+    add_symbols(cfg_.subscriptions.ticker, DataType::Ticker, "orderbook.1.");
+    add_symbols(cfg_.subscriptions.kline,  DataType::Kline,  "kline.1.");
 
     WebSocketClient::Config ws_cfg;
     ws_cfg.host          = "stream.bybit.com";
@@ -116,6 +119,8 @@ void BybitAdapter::on_ws_state_change(bool connected) {
         net::co_spawn(ioc_, subscribe_topics(), net::detached);
     } else {
         logger_->warn("[{}] disconnected, dropping local books", exchange_name_);
+        for (size_t i = 0; i < books_.size(); ++i)
+            get_metrics().inc_resync(exchange_name_, ResyncReason::Disconnect);
         books_.clear();
         tickers_.clear();
     }
@@ -154,6 +159,7 @@ void BybitAdapter::handle_message(std::string_view raw) {
     simdjson::padded_string padded(raw);
     auto doc_result = json_parser_.iterate(padded);
     if (doc_result.error()) {
+        get_metrics().inc_parse_error(exchange_name_);
         logger_->warn("[{}] JSON parse error", exchange_name_);
         return;
     }
@@ -264,6 +270,7 @@ void BybitAdapter::handle_orderbook(simdjson::ondemand::document& doc,
     } else {
         // u == 1 means Bybit restarted the stream; a fresh snapshot follows.
         if (update_id == 1) {
+            get_metrics().inc_resync(exchange_name_, ResyncReason::StreamRestart);
             logger_->warn("[{}] {} stream restarted, waiting for snapshot",
                           exchange_name_, symbol);
             books_.erase(symbol);

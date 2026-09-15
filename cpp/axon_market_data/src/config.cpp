@@ -29,6 +29,12 @@ AppConfig load_config(const std::string& path) {
         if (log["max_files"]) cfg.logging.max_files = log["max_files"].as<unsigned>();
     }
 
+    if (auto metrics = root["metrics"]) {
+        if (metrics["enabled"]) cfg.metrics.enabled = metrics["enabled"].as<bool>();
+        if (metrics["host"])    cfg.metrics.host    = metrics["host"].as<std::string>();
+        if (metrics["port"])    cfg.metrics.port    = metrics["port"].as<int>();
+    }
+
     if (auto exchanges = root["exchanges"]) {
         for (const auto& ex : exchanges) {
             ExchangeConfig ec;

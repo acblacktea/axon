@@ -88,6 +88,12 @@ private:
     bool                            writing_   = false;
     bool                            running_   = false;
     bool                            connected_ = false;
+
+    // steady_seconds() at the moment this connection came up, 0 while down.
+    // Closing it out in notify_state() is what makes the session-duration
+    // histogram immune to the several redundant notify_state(false) calls on
+    // the teardown paths.
+    double                          session_start_ = 0.0;
 };
 
 } // namespace axon_market_data
