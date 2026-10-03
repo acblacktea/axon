@@ -8,6 +8,7 @@
 #include <prometheus/registry.h>
 
 #include <array>
+#include <limits>
 #include <stdexcept>
 
 namespace axon::util {
@@ -63,6 +64,11 @@ struct MetricsClient::Impl {
 
   prometheus::Family<prometheus::Counter>* ems_request_error = nullptr;
   prometheus::Family<prometheus::Histogram>* ems_request_latency = nullptr;
+
+  prometheus::Family<prometheus::Gauge>* hot_stage_latency = nullptr;
+  prometheus::Family<prometheus::Gauge>* hot_stage_max = nullptr;
+  prometheus::Family<prometheus::Gauge>* hot_stage_samples = nullptr;
+  prometheus::Family<prometheus::Gauge>* hot_stage_dropped = nullptr;
 
   prometheus::Family<prometheus::Counter>* db_write_failure = nullptr;
   prometheus::Family<prometheus::Gauge>* account_margin_ratio = nullptr;
@@ -141,6 +147,25 @@ struct MetricsClient::Impl {
                                .Name("axon_ems_request_latency_seconds")
                                .Help("EMS request latency")
                                .Register(*registry);
+
+    hot_stage_latency =
+        &prometheus::BuildGauge()
+             .Name("axon_hot_stage_latency_nanoseconds")
+             .Help("Hot-path segment latency over the last reporting window")
+             .Register(*registry);
+    hot_stage_max = &prometheus::BuildGauge()
+                         .Name("axon_hot_stage_latency_max_nanoseconds")
+                         .Help("Worst hot-path segment latency in the window")
+                         .Register(*registry);
+    hot_stage_samples = &prometheus::BuildGauge()
+                             .Name("axon_hot_stage_samples")
+                             .Help("Journeys folded into the window")
+                             .Register(*registry);
+    hot_stage_dropped =
+        &prometheus::BuildGauge()
+             .Name("axon_hot_stage_dropped")
+             .Help("Journeys rejected for missing or out-of-order stamps")
+             .Register(*registry);
 
     db_write_failure = &prometheus::BuildCounter()
                             .Name("axon_db_write_failure_total")
@@ -325,6 +350,44 @@ void MetricsClient::observe_ems_request(const std::string& exchange,
 void MetricsClient::inc_db_write_failure(const std::string& repository) {
   AXON_GUARD();
   impl_->db_write_failure->Add({{"repository", repository}}).Increment();
+}
+
+void MetricsClient::set_hot_stage(const std::string& segment,
+                                  std::uint64_t samples, std::uint64_t p50_ns,
+                                  std::uint64_t p99_ns, std::uint64_t p999_ns,
+                                  std::uint64_t max_ns) {
+  AXON_GUARD();
+
+  // An idle window has no quantiles. Publishing 0 would draw a flat zero line
+  // that reads as "this path is instant" -- the most dangerous thing a latency
+  // dashboard can say. NaN is the exposition format's way of saying "no value
+  // here"; Prometheus stores it and graphs it as a gap, which is the truth.
+  // The sample count is still published as a real 0, so an idle path stays
+  // distinguishable from one that was never wired up.
+  const bool empty = (samples == 0);
+  const auto ns_or_gap = [empty](std::uint64_t ns) {
+    return empty ? std::numeric_limits<double>::quiet_NaN()
+                 : static_cast<double>(ns);
+  };
+
+  // Quantile label values follow the Prometheus summary convention, so the
+  // same dashboard expressions work whether a series came from here or from a
+  // native summary.
+  const auto q = [&](const char* name, std::uint64_t ns) {
+    impl_->hot_stage_latency->Add({{"segment", segment}, {"quantile", name}})
+        .Set(ns_or_gap(ns));
+  };
+  q("0.5", p50_ns);
+  q("0.99", p99_ns);
+  q("0.999", p999_ns);
+  impl_->hot_stage_max->Add({{"segment", segment}}).Set(ns_or_gap(max_ns));
+  impl_->hot_stage_samples->Add({{"segment", segment}})
+      .Set(static_cast<double>(samples));
+}
+
+void MetricsClient::set_hot_stage_dropped(std::uint64_t journeys) {
+  AXON_GUARD();
+  impl_->hot_stage_dropped->Add({}).Set(static_cast<double>(journeys));
 }
 
 void MetricsClient::set_account_margin_ratio(const std::string& exchange,

@@ -180,6 +180,11 @@ add_library(axon_app
   src/util/logging.cpp
   src/util/metrics.cpp
   src/ems/ems_service.cpp
+  src/ems/venue_ops.cpp
+  src/ems/deribit/deribit_ems.cpp
+  src/ems/okx/okx_ems.cpp
+  src/ems/bybit/bybit_ems.cpp
+  src/ems/binance/binance_ems.cpp
   src/repository/postgres.cpp
   src/client/strategy_client.cpp
   src/oms/order_store.cpp
@@ -199,9 +204,7 @@ target_link_libraries(axon_app
 add_executable(axon_engine src/engine_main.cpp)
 target_link_libraries(axon_engine PRIVATE axon::app)
 
-# A worked example of the client, and the only translation unit that
-# instantiates the client-side algorithm templates -- so they are type-checked
-# by every build rather than by whoever writes the first strategy.
+# A worked example of the client.
 add_executable(axon_strategy src/strategy_main.cpp)
 target_link_libraries(axon_strategy PRIVATE axon::app)
 

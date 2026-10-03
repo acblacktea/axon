@@ -35,6 +35,12 @@ struct MetricsConfig {
 
 struct AppConfig {
     std::string                pub_address = "tcp://*:5558";
+    // Seconds after start at which every subscribed-but-silent topic is
+    // logged. 0 disables the check. A one-shot, not a recurring monitor:
+    // it catches a topic that never worked, which is a deploy-time mistake.
+    // A topic that worked and then went quiet is a runtime condition, and
+    // the Prometheus query in the README is the right tool for that.
+    int                        silent_topic_check_seconds = 30;
     LogConfig                  logging;
     MetricsConfig              metrics;
     std::vector<ExchangeConfig> exchanges;

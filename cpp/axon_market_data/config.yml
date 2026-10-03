@@ -6,6 +6,11 @@ logging:
   level: info                   # trace / debug / info / warn / error / critical
   max_files: 30                 # days of history to keep; 0 keeps everything
 
+# Log any topic that was subscribed but never delivered anything. A venue's
+# subscribe ack proves nothing: Binance answers {"result":null} even for a
+# stream name that does not exist. 0 disables.
+silent_topic_check_seconds: 30
+
 metrics:
   enabled: true
   host: "0.0.0.0"

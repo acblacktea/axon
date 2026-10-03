@@ -7,6 +7,7 @@ namespace axon_market_data {
 Service::Service(const AppConfig& cfg, std::shared_ptr<spdlog::logger> logger)
     : cfg_(cfg)
     , logger_(logger ? std::move(logger) : spdlog::default_logger())
+    , silent_check_(ioc_)
     , publisher_(cfg.pub_address, logger_) {}
 
 Service::~Service() { stop(); }
@@ -36,6 +37,18 @@ void Service::run() {
         adapters_.push_back(std::move(adapter));
     }
 
+    // A venue's subscribe acknowledgement does not mean data will follow, so
+    // check once, after every stream has had time to deliver something.
+    if (cfg_.silent_topic_check_seconds > 0) {
+        silent_check_.expires_after(
+            std::chrono::seconds(cfg_.silent_topic_check_seconds));
+        silent_check_.async_wait([this](const boost::system::error_code& ec) {
+            if (ec) return; // cancelled by shutdown
+            for (auto& adapter : adapters_)
+                adapter->warn_if_silent();
+        });
+    }
+
     // Graceful shutdown on SIGINT / SIGTERM
     boost::asio::signal_set signals(ioc_, SIGINT, SIGTERM);
     signals.async_wait([this](const boost::system::error_code&, int sig) {
@@ -51,6 +64,8 @@ void Service::run() {
 void Service::stop() {
     if (!running_) return;
     running_ = false;
+
+    silent_check_.cancel();
 
     for (auto& adapter : adapters_)
         adapter->stop();

@@ -89,6 +89,10 @@ class ShmBridge {
   const core::StageLatency& command_latency() const noexcept { return latency_; }
   std::string latency_report() const { return latency_.report(); }
 
+  // Starts a fresh latency window. The caller publishes the closing window
+  // first; see the reporting block in engine_main.
+  void reset_latency() noexcept { latency_.reset(); }
+
  private:
   struct Pair {
     std::unique_ptr<core::ShmRing> events;    // engine -> strategy

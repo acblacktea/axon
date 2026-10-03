@@ -130,8 +130,37 @@ exchanges:
   不发布序列号,也没有增量订单簿频道。`l2Book` 使用默认模式订阅:每侧 20 档、
   约 0.24 msg/s。`fast: true` 变体可达约 2 msg/s 但每侧只有 5 档;而 `bbo`
   频道已经以约 8 msg/s 覆盖了盘口,所以 depth 这边保留档位数。
+- **Binance U 本位合约在部分网络上只下发订单簿类的流。** `fstream.binance.com`
+  的 `@depth` / `@bookTicker` 正常,而 `@kline_*` / `@aggTrade` / `@markPrice` /
+  `@ticker` 一条都不推 —— 用不经过本项目的最小客户端、以 `/stream?streams=` 组合流
+  形式(完全不涉及 SUBSCRIBE)也是同样结果,换 symbol 一样,同一时刻现货的
+  `@kline_1m` / `@aggTrade` 正常。`LIST_SUBSCRIPTIONS` 会确认这些流确实注册了。
+  典型原因是衍生品成交数据的区域限制。**受影响时合约 K 线要走 REST**
+  (`fapi/v1/klines` 正常返回),或者换一个部署区域。
 - K 线固定为 1 分钟。Bybit 和 Hyperliquid 并非在所有市场都发布成交额 /
   成交笔数,因此这些字段可能为 `0`。
+
+### `silent_topic_check_seconds`
+
+```yaml
+silent_topic_check_seconds: 30   # 0 关闭
+```
+
+启动这么多秒之后,把**订阅了但一条数据都没收到**的 topic 打成 warning:
+
+```
+[binance_usdt_futures] SILENT: subscribed to kline.BTC_USDT_PERP but no data
+has arrived. The venue acknowledged the subscription -- that proves nothing.
+[binance_usdt_futures] 1 of 2 subscribed topics are silent
+```
+
+**存在的理由是订阅应答不可信。** Binance 对 `totallybogus@nonsense_9z` 这种根本
+不存在的流名同样返回 `{"result":null,"id":N}`,所以日志里那句 "subscribed to N
+streams" 只证明字节发出去了。流名拼错、流被下架、或者这条网络拿不到这个流 ——
+三种情况的表现都和"市场很安静"一模一样。
+
+这是**一次性检查,不是持续监控**:它抓的是"从来就没通过",属于部署期错误。
+一个先前正常、后来静默的 topic 是运行期状态,交给下面那条 Prometheus 查询。
 
 ### `depth_levels`
 

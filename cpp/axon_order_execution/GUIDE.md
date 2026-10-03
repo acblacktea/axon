@@ -387,9 +387,6 @@ while (running) {
 ./build/axon_strategy --id my_strategy --shm /dev/shm --watch
 ```
 
-它也是唯一实例化客户端算法模板（`chase_maker`、`hedge_deribit`）的编译单元——
-所以那些模板由每次构建做类型检查，而不是等第一个用它的人来发现问题。
-
 ### 3.5 观测
 
 Prometheus 端点默认在 `http://0.0.0.0:9100/metrics`。
@@ -407,6 +404,37 @@ Prometheus 端点默认在 `http://0.0.0.0:9100/metrics`。
 
 引擎日志里那行每分钟心跳同样重要，尤其是 `hot path: N commands, M events (K dropped)`
 ——**dropped 非零意味着某个策略没跟上，它的事件被丢了**。
+
+#### 热路径分段延迟
+
+共享内存命令路径的每一段，来自消息自己带的时间戳，所以量的是**真实路径**而不是
+它的基准测试：
+
+| 指标 | 标签 | |
+|---|---|---|
+| `axon_hot_stage_latency_nanoseconds` | segment, quantile=0.5/0.99/0.999 | |
+| `axon_hot_stage_latency_max_nanoseconds` | segment | |
+| `axon_hot_stage_samples` | segment | 本窗口的样本数 |
+| `axon_hot_stage_dropped` | — | 戳缺失或乱序而被丢弃的旅程数 |
+
+`segment` 取值 `origin->enqueued`（策略侧编码）、`enqueued->dequeued`（环上传输）、
+`dequeued->handled`（引擎分发到 EMS），外加 `total`。**`total` 不是各段之和** ——
+分段的 p99 和端到端的 p99 来自不同的消息。
+
+三个设计取舍，用之前要知道：
+
+- **窗口是心跳间隔（60 秒），不是进程启动以来。** 累计统计会用几小时的旧样本稀释尾部，
+  而尾部正是这些指标存在的理由；历史交给 Prometheus 存。
+- **是预先算好分位数的 gauge，不是 Prometheus 直方图。** 分位数来自 HDR 直方图，
+  相对精度恒定，比这里能配出来的任何固定桶阶梯都细；而且把每个样本喂给 Prometheus
+  等于把标签查找放回每条消息的路径上，那是 `util/metrics.h` 顶部明令禁止的。
+  代价是**这些 gauge 不能跨进程求和** —— 单进程引擎无所谓，写在这里是免得有人去试。
+- **空窗口发的是 NaN 不是 0。** 0 会在面板上画一条平的零线，读起来像"这条路是瞬时的" ——
+  延迟面板能说的最危险的一句话。NaN 在图上是一段空白，也就是真相。`samples` 仍然发真实的
+  0，所以"闲置"和"从来没接上"仍然区分得开。
+
+`axon_hot_stage_dropped` 持续非零，在没有 invariant TSC 的机器上意味着计数器被跨核读取
+——**坏掉的是测量，不是引擎**。
 
 ### 3.6 测试与基准
 

@@ -29,6 +29,9 @@ AppConfig load_config(const std::string& path) {
         if (log["max_files"]) cfg.logging.max_files = log["max_files"].as<unsigned>();
     }
 
+    if (root["silent_topic_check_seconds"])
+        cfg.silent_topic_check_seconds = root["silent_topic_check_seconds"].as<int>();
+
     if (auto metrics = root["metrics"]) {
         if (metrics["enabled"]) cfg.metrics.enabled = metrics["enabled"].as<bool>();
         if (metrics["host"])    cfg.metrics.host    = metrics["host"].as<std::string>();

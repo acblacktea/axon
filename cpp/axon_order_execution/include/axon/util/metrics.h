@@ -92,6 +92,34 @@ class MetricsClient {
   // --- persistence -------------------------------------------------------
   void inc_db_write_failure(const std::string& repository);
 
+  // --- hot path -----------------------------------------------------------
+  // One segment of the shared-memory command path over the LAST REPORTING
+  // WINDOW, not since startup. Cumulative-since-start would dilute the tail
+  // with hours of old samples, which is the opposite of what a tail metric is
+  // for; Prometheus keeps the history instead.
+  //
+  // Gauges carrying pre-computed quantiles, NOT a Prometheus histogram. Two
+  // reasons: the quantiles come from an HDR histogram with constant relative
+  // precision, which is finer than any fixed bucket ladder we would configure
+  // here; and feeding Prometheus every sample would put a label lookup back on
+  // a per-message path, which the note at the top of this file forbids. The
+  // cost is that these gauges cannot be summed across processes -- fine for a
+  // single-process engine, and stated here so nobody tries.
+  //
+  // `samples` is published alongside because a quantile over four samples is
+  // not a quantile; alert on it before trusting the rest. A window with no
+  // samples publishes NaN quantiles -- a gap on the graph -- rather than 0,
+  // which would read as "this path is instant".
+  void set_hot_stage(const std::string& segment, std::uint64_t samples,
+                     std::uint64_t p50_ns, std::uint64_t p99_ns,
+                     std::uint64_t p999_ns, std::uint64_t max_ns);
+
+  // Journeys thrown away because their stamps were missing or went backwards.
+  // A sustained non-zero value on a machine without invariant TSC means the
+  // counter is being read across core migrations -- the measurements, not the
+  // engine, are what is broken.
+  void set_hot_stage_dropped(std::uint64_t journeys);
+
   // --- risk --------------------------------------------------------------
   void set_account_margin_ratio(const std::string& exchange,
                                 const std::string& currency, double ratio);

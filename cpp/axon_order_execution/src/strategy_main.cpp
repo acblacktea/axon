@@ -1,8 +1,6 @@
 // Example strategy process. There is no Python equivalent to port: on that
 // side a strategy is a script that imports StrategyClient. This is the same
-// thing in C++ -- a worked example of the client, and the only place the
-// client-side algorithms are instantiated, so they are compiled by the build
-// rather than only when someone first uses them.
+// thing in C++ -- a worked example of the client.
 //
 //     axon_strategy --id my_strategy --ticker deribit:BTC-PERPETUAL
 //     axon_strategy --id my_strategy --shm /dev/shm --watch
@@ -19,8 +17,6 @@
 #include <string>
 #include <thread>
 
-#include "axon/client/algorithms/chase_maker.h"
-#include "axon/client/algorithms/hedge_deribit.h"
 #include "axon/client/strategy_client.h"
 #include "axon/util/logging.h"
 
@@ -197,15 +193,4 @@ int main(int argc, char** argv) {
   client.close();
   axon::util::shutdown_logging();
   return exit_code;
-}
-
-// Not called: it exists so the client-side algorithm templates are
-// instantiated and type-checked by every build, instead of failing to compile
-// the first time somebody writes a strategy that uses them.
-[[maybe_unused]] static void instantiate_algorithms(
-    axon::client::StrategyClient& client) {
-  axon::client::algorithms::chase_maker_fill(
-      client, axon::client::algorithms::ChaseMakerParams{});
-  axon::client::algorithms::hedge_deribit_options(
-      client, axon::client::algorithms::HedgeDeribitParams{});
 }

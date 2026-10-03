@@ -52,6 +52,10 @@
 
 namespace axon::ems {
 
+// Everything the four venues do differently on the order path, as one row per
+// venue. Defined in ems_service.cpp; only ever passed around by reference.
+struct VenueOps;
+
 struct OrderResult {
   bool success = false;
   std::optional<models::Order> order;
@@ -112,21 +116,26 @@ class EmsService {
   // The connection order entry for `exchange` should go out on, or nullptr if
   // there is none or it is not live. Never invokes a callback -- deciding is
   // separate from reporting, so the caller owns the error message.
-  oms::VenueSession* ws_entry_session(const std::string& exchange) const;
+  oms::VenueSession* ws_entry_session(const std::string& exchange,
+                                      const VenueOps& ops) const;
   // Why order entry is unavailable, naming the session state. "Session is
   // backoff" and "no session" send an operator to completely different places.
-  std::string order_entry_unavailable(const std::string& exchange) const;
+  std::string order_entry_unavailable(const std::string& exchange,
+                                      const VenueOps& ops) const;
 
   // Each returns true if the request was handed to the socket. On false the
   // callback has NOT been invoked and the caller reports the failure.
-  bool place_via_websocket(const std::string& exchange,
+  //
+  // `ops` is resolved once by the public entry point and threaded through, so
+  // no step below ever asks which venue this is a second time.
+  bool place_via_websocket(const std::string& exchange, const VenueOps& ops,
                            const models::OrderRequest& request,
                            const OrderCallback& callback);
-  bool cancel_via_websocket(const std::string& exchange,
+  bool cancel_via_websocket(const std::string& exchange, const VenueOps& ops,
                             const std::string& order_id,
                             const std::string& symbol,
                             const BoolCallback& callback);
-  bool modify_via_websocket(const std::string& exchange,
+  bool modify_via_websocket(const std::string& exchange, const VenueOps& ops,
                             const models::Order& existing,
                             std::optional<core::Qty> amount,
                             std::optional<core::Price> price,

@@ -306,6 +306,7 @@ class Engine {
           if (hot.commands_received > 0) {
             AXON_LOG_INFO(log_, "hot command latency:\n{}", shm_.latency_report());
           }
+          publish_hot_latency();
         }
       }
 
@@ -313,6 +314,33 @@ class Engine {
     }
 
     AXON_LOG_INFO(log_, "engine stopping after {} iterations", iterations);
+  }
+
+  // Publishes the closing latency window to Prometheus, then opens a new one.
+  //
+  // Called from the once-a-minute heartbeat, never from the message path: the
+  // label lookups below are exactly what the note in util/metrics.h forbids on
+  // a per-message path, and once a minute they cost nothing.
+  void publish_hot_latency() {
+    auto& metrics = axon::util::get_metrics();
+    const auto& lat = shm_.command_latency();
+
+    const auto publish = [&](const std::string& name,
+                             const axon::core::Histogram& h) {
+      metrics.set_hot_stage(name, h.count(), h.p50(), h.p99(), h.p999(), h.max());
+    };
+
+    for (std::size_t i = 0; i < lat.segment_count(); ++i) {
+      publish(lat.stage_name(i) + "->" + lat.stage_name(i + 1), lat.segment(i));
+    }
+    // The total is published under its own name rather than as another
+    // segment, because it is not the sum of the segments: a per-segment p99
+    // and the end-to-end p99 come from different messages.
+    publish("total", lat.total());
+    metrics.set_hot_stage_dropped(lat.dropped());
+
+    // Reset last: everything above reads the window that just closed.
+    shm_.reset_latency();
   }
 
   void stop() {

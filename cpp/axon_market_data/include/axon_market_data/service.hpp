@@ -33,6 +33,7 @@ private:
     AppConfig                    cfg_;
     std::shared_ptr<spdlog::logger> logger_;
     boost::asio::io_context      ioc_;
+    boost::asio::steady_timer    silent_check_;
     ZmqPublisher                 publisher_;
     std::vector<std::shared_ptr<Adapter>> adapters_;
     bool                         running_ = false;

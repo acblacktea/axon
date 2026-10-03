@@ -38,6 +38,29 @@ gtest_discover_tests(axon_tests
 )
 
 # ---------------------------------------------------------------------------
+# App-layer tests, in their own binary.
+#
+# axon::app is where the third-party surface widens -- yaml-cpp, spdlog,
+# prometheus-cpp, cppzmq, libpqxx. Linking it into axon_tests would take that
+# dependency into the tests for layers that deliberately build with nothing but
+# a compiler and OpenSSL, and being testable in isolation is the point of that
+# split. A second executable keeps both properties.
+# ---------------------------------------------------------------------------
+add_executable(axon_app_tests
+  test_ems_dispatch.cpp
+)
+target_include_directories(axon_app_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(axon_app_tests PRIVATE
+  axon::app
+  GTest::gtest
+  GTest::gtest_main
+)
+gtest_discover_tests(axon_app_tests
+  DISCOVERY_TIMEOUT 60
+  PROPERTIES TIMEOUT 120
+)
+
+# ---------------------------------------------------------------------------
 # Cross-implementation wire compatibility.
 #
 # Emits canonical objects as JSON from C++, then has the real Python
