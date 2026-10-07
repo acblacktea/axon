@@ -48,6 +48,7 @@ gtest_discover_tests(axon_tests
 # ---------------------------------------------------------------------------
 add_executable(axon_app_tests
   test_ems_dispatch.cpp
+  test_rest_json.cpp
 )
 target_include_directories(axon_app_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(axon_app_tests PRIVATE
@@ -115,3 +116,24 @@ elseif(NOT EXISTS "${_axon_serialization}")
 else()
   message(WARNING "python_wire_compat is DISABLED: no Python interpreter found.")
 endif()
+
+# ---------------------------------------------------------------------------
+# Live testnet suite.
+#
+# Talks to the venues' TESTNETS with real credentials, so it is a separate
+# binary and deliberately NOT registered with ctest: a plain `ctest` must
+# never reach the network. Run it explicitly:
+#
+#   source ~/.config/axon/binance-testnet.env
+#   AXON_TESTNET=1 ./build/tests/axon_testnet_tests
+#
+# Without AXON_TESTNET=1 and the credentials every test skips.
+# ---------------------------------------------------------------------------
+add_executable(axon_testnet_tests
+  testnet/test_binance_testnet.cpp
+)
+target_link_libraries(axon_testnet_tests PRIVATE
+  axon::app
+  GTest::gtest
+  GTest::gtest_main
+)

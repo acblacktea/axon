@@ -608,7 +608,7 @@ std::optional<Json> parse_bytes(std::string_view bytes) {
   if (j.is_discarded()) {
     return std::nullopt;
   }
-  return j;
+  return std::optional<Json>(std::in_place, std::move(j));
 }
 
 }  // namespace

@@ -6,6 +6,7 @@
 #include <prometheus/gauge.h>
 #include <prometheus/histogram.h>
 #include <prometheus/registry.h>
+#include <prometheus/text_serializer.h>
 
 #include <map>
 #include <stdexcept>
@@ -212,6 +213,11 @@ void MetricsClient::start_server(const std::string& host, int port) {
 
 void MetricsClient::stop_server() {
     if (impl_) impl_->exposer.reset();
+}
+
+std::string MetricsClient::serialize() const {
+    if (!enabled_ || !impl_) return {};
+    return prometheus::TextSerializer().Serialize(impl_->registry->Collect());
 }
 
 // ---------------------------------------------------------------------------

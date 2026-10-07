@@ -252,7 +252,7 @@ class Decimal {
   }
 
  private:
-  using i128 = __int128;
+  __extension__ using i128 = __int128;
 
   static constexpr bool fits_i64(i128 v) noexcept {
     return v <= static_cast<i128>(INT64_MAX) && v >= static_cast<i128>(INT64_MIN);

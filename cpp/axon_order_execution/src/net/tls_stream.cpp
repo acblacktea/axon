@@ -276,7 +276,8 @@ void TlsStream::start_client(const TlsContext& ctx, std::string_view hostname) {
 
   // SNI. Without it a venue behind shared infrastructure returns the wrong
   // certificate, or none.
-  SSL_set_tlsext_host_name(ssl_, host.c_str());
+  SSL_ctrl(ssl_, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name,
+           const_cast<char*>(host.c_str()));
 
   if (ctx.verify_peer()) {
     // Hostname verification is SEPARATE from chain verification in OpenSSL.

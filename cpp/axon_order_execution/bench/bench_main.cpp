@@ -228,6 +228,12 @@ void bench_spsc_ring() {
     std::atomic<bool> stop{false};
 
     std::thread responder([&] {
+      // A thread inherits its creator's affinity on Linux, and main() pinned
+      // itself to core 0. Left there, both busy-polling threads share one core
+      // and every round trip waits for a context switch -- milliseconds, not
+      // nanoseconds. Pin the responder to its own core so this measures what
+      // it says: a cache line crossing between cores.
+      static_cast<void>(core::pin_current_thread_to_core(1));
       Ticks t = 0;
       while (!stop.load(std::memory_order_relaxed)) {
         if (to_b.try_pop(t)) {

@@ -6,8 +6,6 @@
 
 namespace axon_market_data {
 
-namespace beast = boost::beast;
-
 // ---------------------------------------------------------------------------
 // Endpoint tables
 // ---------------------------------------------------------------------------
@@ -62,6 +60,11 @@ BinanceAdapter::BinanceAdapter(net::io_context& ioc,
     , ioc_(ioc)
     , cfg_(cfg)
 {
+    fetch_snapshot_ = [](std::string host,
+                         std::string target) -> net::awaitable<HttpResponse> {
+        co_return co_await axon_market_data::http_get(host, target);
+    };
+
     depth_levels_     = cfg_.depth_levels;
     rest_depth_limit_ = rest_depth_limit_for(cfg_.market_type, cfg_.depth_levels);
 
@@ -223,7 +226,7 @@ void BinanceAdapter::handle_message(std::string_view raw) {
     if (!e_field.error()) {
         auto etype = e_field.get_string().value();
         if (etype == "depthUpdate") {
-            handle_depth_update(doc);
+            handle_depth_update(doc, raw);
             return;
         }
         if (etype == "kline") {
@@ -244,7 +247,8 @@ void BinanceAdapter::handle_message(std::string_view raw) {
 // Depth update
 // ---------------------------------------------------------------------------
 
-void BinanceAdapter::handle_depth_update(simdjson::ondemand::document& doc) {
+void BinanceAdapter::handle_depth_update(simdjson::ondemand::document& doc,
+                                         std::string_view raw) {
     auto symbol_sv = doc["s"].get_string().value();
     std::string symbol(symbol_sv);
 
@@ -254,11 +258,7 @@ void BinanceAdapter::handle_depth_update(simdjson::ondemand::document& doc) {
 
     // If syncing, buffer raw JSON for replay
     if (syncing_.contains(symbol)) {
-        // Re-read raw from the WebSocket client's read buffer
-        auto& buf = ws_client_->read_buffer();
-        auto  ptr = static_cast<const char*>(buf.data().data());
-        auto  len = beast::buffer_bytes(buf.data());
-        event_buffers_[symbol].emplace_back(ptr, len);
+        event_buffers_[symbol].emplace_back(raw);
         return;
     }
 
@@ -418,7 +418,7 @@ net::awaitable<void> BinanceAdapter::sync_orderbook(std::string exchange_symbol)
         target += std::to_string(rest_depth_limit_);
 
         const double rest_start = steady_seconds();
-        auto resp = co_await axon_market_data::http_get(rest_host_, target);
+        auto resp = co_await fetch_snapshot_(rest_host_, target);
         get_metrics().observe_rest_snapshot(exchange_name_,
                                             steady_seconds() - rest_start);
         auto& body = resp.body;

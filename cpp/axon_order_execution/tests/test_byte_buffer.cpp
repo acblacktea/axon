@@ -132,7 +132,7 @@ TEST(ByteBuffer, StreamingWithRepeatedCompaction) {
   int counter = 0;
   for (int round = 0; round < 500; ++round) {
     while (b.writable_size() >= 7) {
-      char msg[8];
+      char msg[16];
       std::snprintf(msg, sizeof(msg), "m%05d", counter++);
       std::memcpy(b.writable(), msg, 6);
       b.commit(6);

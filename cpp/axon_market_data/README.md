@@ -53,6 +53,31 @@ cmake --build build
 
 首次构建耗时较长(vcpkg 需要编译全部依赖),后续增量构建很快。
 
+### 4. 测试
+
+```bash
+ctest --test-dir build -j$(nproc)
+```
+
+单测默认随构建一起编译(`-DAXON_MDS_BUILD_TESTS=OFF` 关闭),不需要网络:
+
+- **各交易所协议** —— 直接把抓下来形状的报文喂给适配器,覆盖四家的每个 topic(depth / ticker / kline),
+  包括 Binance 快照 + 增量的拼接规则(现货与合约各一套)、OKX 的 prevSeqId 与 CRC32、
+  Bybit 的流重启、Hyperliquid 的 null 档位。
+- **连接稳定性** —— 在 loopback 上起一个真 TLS WebSocket 服务,验证收发、心跳、
+  服务端正常关闭 / 直接断开后的重连、指数退避、握手超时、`stop()`。
+- **延迟与稳定性指标** —— 每个 `axon_mds_*` 指标都通过 Prometheus 文本输出回读断言,
+  包括"没有交易所时间戳就不采样 message_age"这类规则。
+
+`DISABLED_` 开头的测试记录的是**已确认、尚未修复的缺陷**,注释里写了原因。它们按"正确行为"写成,
+修好之后去掉前缀即可。查看现状:
+
+```bash
+./build/tests/mds_tests --gtest_also_run_disabled_tests --gtest_filter='*DISABLED_*:-OkxTest.DISABLED_TruncatedFrameIsCountedNotFatal'
+```
+
+`OkxTest.DISABLED_TruncatedFrameIsCountedNotFatal` 被排除在外,因为它记录的缺陷会让进程段错误,需要单独跑。
+
 ## 使用
 
 ### 启动行情服务

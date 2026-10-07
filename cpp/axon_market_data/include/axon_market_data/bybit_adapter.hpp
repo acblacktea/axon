@@ -33,6 +33,10 @@ public:
     void stop() override;
 
 private:
+    // Unit tests drive the message handlers directly with captured venue
+    // payloads, without a socket. Defined only in tests/.
+    friend struct AdapterTestAccess;
+
     // ----- WebSocket callbacks -----
     void on_ws_message(std::string_view raw);
     void on_ws_state_change(bool connected);

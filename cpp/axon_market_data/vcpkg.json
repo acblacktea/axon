@@ -11,6 +11,7 @@
     "yaml-cpp",
     "spdlog",
     "prometheus-cpp",
-    "openssl"
+    "openssl",
+    "gtest"
   ]
 }

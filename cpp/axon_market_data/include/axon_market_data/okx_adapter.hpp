@@ -40,6 +40,10 @@ public:
     void stop() override;
 
 private:
+    // Unit tests drive the message handlers directly with captured venue
+    // payloads, without a socket. Defined only in tests/.
+    friend struct AdapterTestAccess;
+
     struct Channel {
         std::string channel; // "books" / "bbo-tbt" / "candle1m"
         std::string inst_id;

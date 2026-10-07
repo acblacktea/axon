@@ -32,6 +32,10 @@ public:
     void stop() override;
 
 private:
+    // Unit tests drive the message handlers directly with captured venue
+    // payloads, without a socket. Defined only in tests/.
+    friend struct AdapterTestAccess;
+
     struct Subscription {
         std::string type; // "l2Book" / "bbo" / "candle"
         std::string coin;

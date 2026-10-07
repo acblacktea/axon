@@ -24,6 +24,14 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
     -Wundef
   )
 
+  # GCC (unlike Clang) applies -Wmissing-field-initializers to C++20
+  # designated initializers, which omit fields on purpose to take their
+  # defaults. The tests rely on that idiom throughout.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(axon_compiler_flags INTERFACE
+      -Wno-missing-field-initializers)
+  endif()
+
   if(AXON_WARNINGS_AS_ERRORS)
     target_compile_options(axon_compiler_flags INTERFACE -Werror)
   endif()

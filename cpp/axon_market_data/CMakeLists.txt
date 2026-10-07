@@ -6,7 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Dependencies
-find_package(Boost REQUIRED COMPONENTS system)
+# Beast, Asio and System are all header-only. Boost >= 1.89 no longer ships a
+# boost_system component at all, so asking for it fails to configure there.
+find_package(Boost CONFIG REQUIRED)
 find_package(simdjson CONFIG REQUIRED)
 find_package(glaze CONFIG REQUIRED)
 find_package(cppzmq CONFIG REQUIRED)
@@ -15,8 +17,10 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(prometheus-cpp CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 
-add_executable(axon_market_data
-    src/main.cpp
+option(AXON_MDS_BUILD_TESTS "Build unit tests" ON)
+
+# Everything but main(), so the unit tests link exactly what ships.
+add_library(axon_market_data_core STATIC
     src/config.cpp
     src/logging.cpp
     src/metrics.cpp
@@ -30,10 +34,10 @@ add_executable(axon_market_data
     src/service.cpp
 )
 
-target_include_directories(axon_market_data PRIVATE include)
+target_include_directories(axon_market_data_core PUBLIC include)
 
-target_link_libraries(axon_market_data PRIVATE
-    Boost::system
+target_link_libraries(axon_market_data_core PUBLIC
+    Boost::headers
     simdjson::simdjson
     glaze::glaze
     cppzmq
@@ -43,6 +47,14 @@ target_link_libraries(axon_market_data PRIVATE
     OpenSSL::SSL
     OpenSSL::Crypto
 )
+
+add_executable(axon_market_data src/main.cpp)
+target_link_libraries(axon_market_data PRIVATE axon_market_data_core)
+
+if(AXON_MDS_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # --- Examples ---
 add_executable(mds_subscriber example/subscriber.cpp)

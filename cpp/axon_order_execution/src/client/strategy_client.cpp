@@ -260,7 +260,7 @@ std::optional<transport::Json> StrategyClient::request(
       ++stats_.request_failures;
       return std::nullopt;
     }
-    return response->data;
+    return std::optional<transport::Json>(std::in_place, response->data);
   } catch (const zmq::error_t& e) {
     error = e.what();
     ++stats_.request_failures;

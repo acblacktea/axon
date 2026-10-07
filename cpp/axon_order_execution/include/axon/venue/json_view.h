@@ -316,7 +316,7 @@ class Document {
   explicit Document(std::size_t max_message_bytes) {
     // Ignoring the error: allocation failure here surfaces on the first
     // parse(), which is where the caller is already checking.
-    static_cast<void>(parser_.allocate(max_message_bytes));
+    [[maybe_unused]] const auto ec = parser_.allocate(max_message_bytes);
   }
 
   // Parses `json`, which MUST have at least kJsonPadding readable bytes past

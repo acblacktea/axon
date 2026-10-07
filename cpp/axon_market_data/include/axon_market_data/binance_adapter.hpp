@@ -37,6 +37,10 @@ public:
     void stop() override;
 
 private:
+    // Unit tests drive the message handlers directly with captured venue
+    // payloads, without a socket. Defined only in tests/.
+    friend struct AdapterTestAccess;
+
     // ----- WebSocket callbacks -----
     void on_ws_message(std::string_view raw);
     void on_ws_state_change(bool connected);
@@ -45,6 +49,12 @@ private:
     net::awaitable<void> subscribe_streams();
 
     // ----- REST (for depth snapshot) -----
+    // How the depth snapshot is fetched. An HTTPS GET in production; a seam so
+    // the sync and replay logic can be exercised without a network.
+    using SnapshotFetcher =
+        std::function<net::awaitable<HttpResponse>(std::string host, std::string target)>;
+    SnapshotFetcher fetch_snapshot_;
+
     // Both take the symbol BY VALUE: a coroutine frame stores a reference
     // parameter as a reference, so a caller's local string would dangle the
     // moment the caller returns.
@@ -55,7 +65,9 @@ private:
 
     // ----- message handling -----
     void handle_message(std::string_view raw);
-    void handle_depth_update(simdjson::ondemand::document& doc);
+    // `raw` is the frame being handled; it is what gets buffered for replay
+    // while the book is syncing.
+    void handle_depth_update(simdjson::ondemand::document& doc, std::string_view raw);
     void handle_book_ticker(simdjson::ondemand::document& doc);
     void handle_kline(simdjson::ondemand::document& doc);
 

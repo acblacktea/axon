@@ -308,13 +308,13 @@ class WsTestServer {
   // Server-to-client frames are UNMASKED, per the RFC.
   static std::string encode_server_frame(net::WsOpcode opcode,
                                          std::string_view payload) {
-    std::vector<std::byte> buf(payload.size() + net::kMaxFrameHeaderSize);
+    std::byte header[net::kMaxFrameHeaderSize];
     const std::size_t n = net::ws_encode_header(
-        buf.data(), buf.size(), opcode, /*fin=*/true, payload.size(),
+        header, sizeof(header), opcode, /*fin=*/true, payload.size(),
         /*masked=*/false, 0);
-    std::memcpy(buf.data() + n, payload.data(), payload.size());
-    return std::string(reinterpret_cast<const char*>(buf.data()),
-                       n + payload.size());
+    std::string frame(reinterpret_cast<const char*>(header), n);
+    frame.append(payload);
+    return frame;
   }
 
   Options options_;

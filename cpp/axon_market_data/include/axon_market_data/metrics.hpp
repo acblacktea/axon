@@ -100,6 +100,10 @@ public:
     void start_server(const std::string& host, int port);
     void stop_server();
 
+    // The registry in Prometheus text exposition format -- exactly what a
+    // scrape of /metrics returns. Empty when disabled.
+    std::string serialize() const;
+
     // --- subscriptions -----------------------------------------------------
     // Declares what this service intends to receive, and hands back the handle
     // the receive path uses. Declaring is what makes "subscribed but silent"
