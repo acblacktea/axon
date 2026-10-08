@@ -83,4 +83,57 @@ void parse_array_at(const net::HttpResponse& r,
   callback(std::move(items), {});
 }
 
+// One object at `path` (empty: the whole body), parsed into a single item.
+// For the single-order lookups. A venue error arrives as an HTTP error and is
+// reported as one; a body that parses but is not an order is reported too,
+// rather than read as "no such order".
+template <typename Item, typename Parse, typename Callback>
+void parse_object_at(const net::HttpResponse& r,
+                     const std::vector<std::string>& path, Parse parse,
+                     Callback callback) {
+  if (!r.error.empty() || !r.ok()) {
+    callback(std::optional<Item>{}, http_error(r));
+    return;
+  }
+  auto root = doc().parse_copy(r.body);
+  if (!root.has_value()) {
+    callback(std::optional<Item>{}, "malformed response");
+    return;
+  }
+  venue::Object current = *root;
+  for (const auto& key : path) {
+    auto next = current[key].as_object();
+    if (!next.has_value()) {
+      callback(std::optional<Item>{}, "response is missing '" + key + "'");
+      return;
+    }
+    current = *next;
+  }
+  auto item = parse(current);
+  if (!item.has_value()) {
+    callback(std::optional<Item>{}, "response is not a recognisable item");
+    return;
+  }
+  callback(std::move(item), {});
+}
+
+// The first element of the array at `path`. The venues that answer a
+// single-order lookup with a one-element list (Bybit, OKX) go through here;
+// an empty list means the venue does not know the order.
+template <typename Item, typename Parse, typename Callback>
+void first_of_array_at(const net::HttpResponse& r,
+                       const std::vector<std::string>& path, Parse parse,
+                       Callback callback) {
+  parse_array_at<Item>(r, path, parse,
+                       [&](std::vector<Item> items, const std::string& error) {
+                         if (!error.empty()) {
+                           callback(std::optional<Item>{}, error);
+                         } else if (items.empty()) {
+                           callback(std::optional<Item>{}, "not found");
+                         } else {
+                           callback(std::optional<Item>(std::move(items.front())), {});
+                         }
+                       });
+}
+
 }  // namespace axon::oms::detail

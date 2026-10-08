@@ -38,15 +38,18 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 
 #include "axon/config.h"
 #include "axon/models/order.h"
 #include "axon/net/http_client.h"
+#include "axon/oms/risk_manager.h"
 #include "axon/oms/venue_rest.h"
 #include "axon/oms/venue_session.h"
 
@@ -60,6 +63,10 @@ struct OrderResult {
   bool success = false;
   std::optional<models::Order> order;
   std::string error;
+  // The request reached the venue but no verdict came back in time: the order
+  // may be live. NOT a rejection, and the caller must not resubmit as if it
+  // were -- that is how a timeout becomes a doubled position.
+  bool outcome_unknown = false;
 };
 
 using OrderCallback = std::function<void(const OrderResult&)>;
@@ -86,6 +93,12 @@ class EmsService {
       std::function<std::optional<models::Order>(const std::string& order_id)>;
   void set_order_lookup(OrderLookup lookup) { lookup_ = std::move(lookup); }
 
+  // Pre-trade risk. Every place and amend is checked before it is built; a
+  // refusal is answered locally and never reaches the venue. Cancels are
+  // never checked -- reducing risk must always be possible, kill switch or
+  // not. Null runs without a risk layer, which the engine warns about.
+  void set_risk_manager(oms::RiskManager* risk) { risk_ = risk; }
+
   // Routes a venue reply that the session did not claim. Wired to
   // VenueSessionHandlers::on_rpc_reply.
   void on_rpc_reply(const std::string& exchange, std::int64_t id, bool success,
@@ -106,6 +119,7 @@ class EmsService {
 
  private:
   struct Pending {
+    bool is_place = false;
     std::string exchange;
     OrderCallback order_callback;
     BoolCallback bool_callback;
@@ -148,8 +162,18 @@ class EmsService {
   std::map<std::string, oms::VenueSession*> sessions_;
   std::map<std::string, oms::VenueSession*> trade_sessions_;
   OrderLookup lookup_;
+  oms::RiskManager* risk_ = nullptr;
   // Keyed by "exchange:rpc_id" so two venues cannot collide on an id.
   std::map<std::string, Pending> pending_;
+
+  // internal_order_ids handed to a venue, so a resubmission is refused here
+  // rather than becoming a second order. Removed again when the venue
+  // definitively rejects one -- a rejected order may be retried. Bounded,
+  // oldest first; the venue's own duplicate-client-id check backs it up.
+  std::unordered_set<std::string> submitted_;
+  std::deque<std::string> submitted_order_;
+  static constexpr std::size_t kMaxRememberedSubmissions = 100'000;
+  void remember_submission(const std::string& key);
 };
 
 }  // namespace axon::ems

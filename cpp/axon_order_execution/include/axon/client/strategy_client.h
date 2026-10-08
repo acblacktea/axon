@@ -62,6 +62,32 @@ struct StrategyEvents {
   std::function<void(const transport::FillMsg&)> on_fill_fast;
 };
 
+// What became of a control-plane order placement.
+enum class PlaceOutcome {
+  // The venue accepted it.
+  kAccepted,
+  // The venue, or the engine before sending, refused it. Nothing is live; the
+  // same request may be retried.
+  kRejected,
+  // It was sent and no verdict came back in time, so it MAY BE LIVE. Do not
+  // resubmit: confirm first, by internal_order_id, from the order updates or
+  // get_active_orders(). Resubmitting the same request is refused by the
+  // engine for exactly this reason.
+  kUnknown,
+};
+
+struct PlaceResult {
+  PlaceOutcome outcome = PlaceOutcome::kRejected;
+  // The venue's view of the order, when the reply carried one.
+  std::optional<models::Order> order;
+  // The id every update for this order will carry -- the handle for
+  // resolving kUnknown.
+  std::string internal_order_id;
+  std::string error;
+
+  bool accepted() const noexcept { return outcome == PlaceOutcome::kAccepted; }
+};
+
 class StrategyClient {
  public:
   StrategyClient();
@@ -89,6 +115,12 @@ class StrategyClient {
 
   // Control plane, blocking until the engine answers or the timeout expires.
   // These are the ones that return the venue's order back.
+  //
+  // submit_order distinguishes a refusal from a timeout; place_order is the
+  // older form, which returns the order on success and folds both failures
+  // into `error` (a kUnknown one starts with transport::kOutcomeUnknownPrefix).
+  PlaceResult submit_order(const std::string& exchange,
+                           const models::OrderRequest& request);
   std::optional<models::Order> place_order(const std::string& exchange,
                                            const models::OrderRequest& request,
                                            std::string& error);
@@ -120,14 +152,20 @@ class StrategyClient {
     std::uint64_t fast_events = 0;
     std::uint64_t requests = 0;
     std::uint64_t request_failures = 0;
+    // Replies to an EARLIER request that arrived after it had timed out, and
+    // were discarded. Non-zero means requests are timing out.
+    std::uint64_t stale_replies = 0;
   };
   const Stats& stats() const noexcept { return stats_; }
 
  private:
   // One request/response round trip on the DEALER socket.
+  // `timed_out`, when given, is set when no reply arrived in time -- the one
+  // failure that says nothing about whether the engine acted.
   std::optional<transport::Json> request(const std::string& command_type,
                                          const transport::Json& payload,
-                                         std::string& error);
+                                         std::string& error,
+                                         bool* timed_out = nullptr);
 
   struct Impl;
   std::unique_ptr<Impl> impl_;

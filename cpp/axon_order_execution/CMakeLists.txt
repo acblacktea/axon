@@ -190,6 +190,7 @@ add_library(axon_app
   src/oms/order_store.cpp
   src/oms/portfolio_store.cpp
   src/oms/reconciler.cpp
+  src/oms/risk_manager.cpp
   src/oms/venue_rest.cpp
   src/oms/venue_session.cpp
   src/transport/shm_bridge.cpp

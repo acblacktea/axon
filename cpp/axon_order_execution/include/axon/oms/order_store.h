@@ -34,6 +34,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -102,6 +103,31 @@ class OrderStore {
   // WebSocket feed lost something, which is worth knowing about.
   void reconcile(const std::vector<models::Order>& orders);
 
+  // --- submissions --------------------------------------------------------
+  //
+  // An order is known by the venue's order id only once the venue says so,
+  // and on a timeout it never does. What it carries from the start is the
+  // client order id we sent (OrderRequest::venue_client_id), which the venue
+  // echoes on every update and which the parsers put in internal_order_id.
+  //
+  // Registering a submission before it is sent maps that client id back to
+  // the request: its real internal_order_id (they differ when the strategy
+  // supplied a label) and the strategy that placed it, so updates reach the
+  // right strategy even for an order whose placement reply was lost.
+  struct Submission {
+    std::string internal_order_id;
+    std::optional<std::string> strategy_id;
+  };
+  void register_submission(const std::string& exchange,
+                           const models::OrderRequest& request);
+  // For a request the venue definitively refused: it will never produce an
+  // update, so the entry would only leak.
+  void forget_submission(const std::string& exchange,
+                         const models::OrderRequest& request);
+  std::optional<Submission> find_submission(const std::string& exchange,
+                                            std::string_view venue_client_id) const;
+  std::size_t submission_count() const noexcept { return submissions_.size(); }
+
   void register_update_callback(UpdateCallback callback);
   void clear_callbacks();
 
@@ -109,6 +135,9 @@ class OrderStore {
 
  private:
   void notify(const models::Order& order);
+  // Rewrites an update's client id into the submission it belongs to.
+  void resolve_submission(models::Order& order) const;
+  static std::string submission_key(const std::string& exchange, std::string_view id);
   void record_terminal_latency(const models::Order& order);
   void purge_expired_terminals(double now_seconds);
 
@@ -123,6 +152,12 @@ class OrderStore {
   // Latency bookkeeping, keyed by order_id.
   std::unordered_map<std::string, double> submit_monotonic_;
   std::unordered_set<std::string> first_ws_seen_;
+
+  // "exchange:venue_client_id" -> submission, and internal_order_id -> that
+  // key, so an entry can be dropped once its order is terminal whichever id
+  // the terminal update carries.
+  std::unordered_map<std::string, Submission> submissions_;
+  std::unordered_map<std::string, std::string> submission_by_internal_;
 };
 
 }  // namespace axon::oms

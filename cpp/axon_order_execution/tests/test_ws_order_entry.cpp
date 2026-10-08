@@ -256,7 +256,10 @@ TEST(BinanceWsOrderEntry, SignatureCoversExactlyWhatIsSent) {
 // signature computed independently (Python's hmac module) -- the same kind of
 // reference the REST builder used to carry.
 TEST(BinanceWsOrderEntry, SigningStringMatchesAnIndependentReference) {
-  const auto req = limit_buy();
+  auto req = limit_buy();
+  // Fixed, so the reference below is stable: every order now carries its
+  // internal_order_id as newClientOrderId.
+  req.internal_order_id = "0123456789abcdef0123456789abcdef";
   axon::venue::binance::BinanceBuilder builder;
   char buf[axon::venue::binance::kMaxRequestBytes];
   std::int64_t id = 0;
@@ -265,11 +268,12 @@ TEST(BinanceWsOrderEntry, SigningStringMatchesAnIndependentReference) {
   ASSERT_GT(n, 0u);
 
   // hmac.new(b"the-api-secret", payload, hashlib.sha256).hexdigest() over:
-  //   apiKey=the-api-key&price=64000.5&quantity=2.5&recvWindow=5000&side=BUY
-  //   &symbol=BTCUSDT&timeInForce=GTC&timestamp=1700000000000&type=LIMIT
+  //   apiKey=the-api-key&newClientOrderId=0123456789abcdef0123456789abcdef
+  //   &price=64000.5&quantity=2.5&recvWindow=5000&side=BUY&symbol=BTCUSDT
+  //   &timeInForce=GTC&timestamp=1700000000000&type=LIMIT
   EXPECT_NE(
       std::string(buf, n).find(
-          R"("signature":"d144f506951720c8cea62419eb99f6e16c52300956a3fbe70ca5faf9cae6bf19")"),
+          R"("signature":"44e75d48f498669b4a4acf61f9fa67a83dc0e7ed0cf1412fd0b511046a93de90")"),
       std::string::npos)
       << std::string(buf, n);
 }

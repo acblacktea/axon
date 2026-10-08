@@ -44,7 +44,9 @@ std::string url_encode(std::string_view s) {
 // response parsing can be tested without a network.
 using detail::doc;
 using detail::http_error;
+using detail::first_of_array_at;
 using detail::parse_array_at;
+using detail::parse_object_at;
 
 // ===========================================================================
 // Deribit
@@ -98,6 +100,13 @@ class DeribitRestImpl final : public VenueRest {
              url_encode(currency) + "&kind=any",
          true, "GET", {}, [cb](const net::HttpResponse& r) {
            parse_array_at<models::Order>(r, {"result"}, parse_order, cb);
+         });
+  }
+
+  void get_order(const models::Order& order, OrderCallback cb) override {
+    send("/api/v2/private/get_order_state?order_id=" + url_encode(order.order_id),
+         true, "GET", {}, [cb](const net::HttpResponse& r) {
+           parse_object_at<models::Order>(r, {"result"}, parse_order, cb);
          });
   }
 
@@ -177,6 +186,12 @@ std::optional<models::Order> DeribitRestImpl::parse_order(venue::Object& d) {
   const auto updated = d["last_update_timestamp"].as_int();
   o.created_at = core::Timestamp::from_millis(created.value_or(0));
   o.updated_at = core::Timestamp::from_millis(updated.value_or(created.value_or(0)));
+  // The client order id we sent: our internal_order_id, or the strategy's
+  // label. It is what lets a snapshot resolve an order whose placement reply
+  // was lost.
+  if (const auto cid = d["label"].as_string(); cid.has_value() && !cid->empty()) {
+    o.internal_order_id = std::string(*cid);
+  }
   return o;
 }
 
@@ -261,6 +276,14 @@ class BinanceRestImpl final : public VenueRest {
     send(signed_path("/fapi/v1/openOrders", ""), true, "GET", {},
          [cb](const net::HttpResponse& r) {
            parse_array_at<models::Order>(r, {}, parse_order, cb);
+         });
+  }
+
+  void get_order(const models::Order& order, OrderCallback cb) override {
+    send(signed_path("/fapi/v1/order", "symbol=" + url_encode(order.instrument) +
+                                           "&orderId=" + url_encode(order.order_id)),
+         true, "GET", {}, [cb](const net::HttpResponse& r) {
+           parse_object_at<models::Order>(r, {}, parse_order, cb);
          });
   }
 
@@ -377,6 +400,12 @@ std::optional<models::Order> BinanceRestImpl::parse_order(venue::Object& d) {
   const auto created = d["time"].as_int();
   o.created_at = core::Timestamp::from_millis(created.value_or(0));
   o.updated_at = core::Timestamp::from_millis(updated.value_or(created.value_or(0)));
+  // The client order id we sent: our internal_order_id, or the strategy's
+  // label. It is what lets a snapshot resolve an order whose placement reply
+  // was lost.
+  if (const auto cid = d["clientOrderId"].as_string(); cid.has_value() && !cid->empty()) {
+    o.internal_order_id = std::string(*cid);
+  }
   return o;
 }
 
@@ -480,6 +509,17 @@ class BybitRestImpl final : public VenueRest {
          });
   }
 
+  void get_order(const models::Order& order, OrderCallback cb) override {
+    // /realtime also returns recently CLOSED orders when asked by id, which is
+    // the case this exists for -- the same endpoint the Python get_order uses.
+    const std::string query = "category=linear&symbol=" + url_encode(order.instrument) +
+                              "&orderId=" + url_encode(order.order_id);
+    send("/v5/order/realtime?" + query, query, true, "GET", {},
+         [cb](const net::HttpResponse& r) {
+           first_of_array_at<models::Order>(r, {"result", "list"}, parse_order, cb);
+         });
+  }
+
   void get_positions(const std::string& currency, PositionsCallback cb) override {
     const std::string query =
         "category=linear&settleCoin=" + url_encode(currency.empty() ? "USDT" : currency);
@@ -566,6 +606,12 @@ std::optional<models::Order> BybitRestImpl::parse_order(venue::Object& d) {
   const auto updated = d["updatedTime"].as_int();
   o.created_at = core::Timestamp::from_millis(created.value_or(0));
   o.updated_at = core::Timestamp::from_millis(updated.value_or(created.value_or(0)));
+  // The client order id we sent: our internal_order_id, or the strategy's
+  // label. It is what lets a snapshot resolve an order whose placement reply
+  // was lost.
+  if (const auto cid = d["orderLinkId"].as_string(); cid.has_value() && !cid->empty()) {
+    o.internal_order_id = std::string(*cid);
+  }
   return o;
 }
 
@@ -671,6 +717,14 @@ class OkxRestImpl final : public VenueRest {
          });
   }
 
+  void get_order(const models::Order& order, OrderCallback cb) override {
+    send("/api/v5/trade/order?instId=" + url_encode(order.instrument) +
+             "&ordId=" + url_encode(order.order_id),
+         "GET", {}, true, [cb](const net::HttpResponse& r) {
+           first_of_array_at<models::Order>(r, {"data"}, parse_order, cb);
+         });
+  }
+
   void get_positions(const std::string&, PositionsCallback cb) override {
     send("/api/v5/account/positions?instType=SWAP", "GET", {}, true,
          [cb](const net::HttpResponse& r) {
@@ -750,6 +804,12 @@ std::optional<models::Order> OkxRestImpl::parse_order(venue::Object& d) {
   const auto updated = d["uTime"].as_int();
   o.created_at = core::Timestamp::from_millis(created.value_or(0));
   o.updated_at = core::Timestamp::from_millis(updated.value_or(created.value_or(0)));
+  // The client order id we sent: our internal_order_id, or the strategy's
+  // label. It is what lets a snapshot resolve an order whose placement reply
+  // was lost.
+  if (const auto cid = d["clOrdId"].as_string(); cid.has_value() && !cid->empty()) {
+    o.internal_order_id = std::string(*cid);
+  }
   return o;
 }
 

@@ -107,27 +107,32 @@ TEST(DeribitBuilder, MarketOrderOmitsPrice) {
   EXPECT_EQ((*params)["type"].as_string().value_or(""), "market");
 }
 
-TEST(DeribitBuilder, LabelIsIncludedOnlyWhenSet) {
+// Every order carries a client id, so its updates can be tied back to the
+// request even when the placement reply is lost. Deribit's only client field
+// is `label`: the strategy's label when set, otherwise our internal_order_id.
+TEST(DeribitBuilder, LabelIsTheVenueClientId) {
   DeribitBuilder b;
   char buf[kMaxRequestBytes];
   std::int64_t id = 0;
 
+  auto label_of = [&](const models::OrderRequest& req) {
+    const std::size_t n = b.place_order(buf, sizeof(buf), req, id);
+    auto root = doc().parse_copy(std::string_view(buf, n));
+    EXPECT_TRUE(root.has_value());
+    auto params = (*root)["params"].as_object();
+    EXPECT_TRUE(params.has_value());
+    return std::string((*params)["label"].as_string().value_or("<absent>"));
+  };
+
   auto req = limit_buy();
-  std::size_t n = b.place_order(buf, sizeof(buf), req, id);
-  EXPECT_EQ(std::string_view(buf, n).find("\"label\""), std::string_view::npos);
+  EXPECT_EQ(label_of(req), req.internal_order_id);
 
   req.label = "chase-maker";
-  n = b.place_order(buf, sizeof(buf), req, id);
-  auto root = doc().parse_copy(std::string_view(buf, n));
-  ASSERT_TRUE(root.has_value());
-  auto params = (*root)["params"].as_object();
-  ASSERT_TRUE(params.has_value());
-  EXPECT_EQ((*params)["label"].as_string().value_or(""), "chase-maker");
+  EXPECT_EQ(label_of(req), "chase-maker");
 
-  // An empty label must be treated as absent, matching `if request.label:`.
+  // An empty label is absent, matching `if request.label:`.
   req.label = "";
-  n = b.place_order(buf, sizeof(buf), req, id);
-  EXPECT_EQ(std::string_view(buf, n).find("\"label\""), std::string_view::npos);
+  EXPECT_EQ(label_of(req), req.internal_order_id);
 }
 
 TEST(DeribitBuilder, PostOnlyEmitsJsonBooleansNotStrings) {

@@ -91,7 +91,11 @@ class VenueSession {
   void stop();
 
   SessionState state() const noexcept { return state_; }
-  bool live() const noexcept { return state_ == SessionState::kLive; }
+  // live() and send_raw() are virtual so the EMS can be tested against a fake
+  // connection -- timeouts, duplicate submissions and reply handling are
+  // otherwise only reachable with a venue on the other end. One indirect call
+  // per order, against a network round trip.
+  virtual bool live() const noexcept { return state_ == SessionState::kLive; }
   const std::string& exchange_name() const noexcept { return exchange_.name; }
   const std::string& last_error() const noexcept { return last_error_; }
   std::uint64_t reconnect_count() const noexcept { return reconnects_; }
@@ -100,7 +104,7 @@ class VenueSession {
   // WebSocket goes through here. Returns false if the session is not live or
   // the send buffer is full -- both of which the caller must handle rather
   // than assume away.
-  bool send_raw(std::string_view payload);
+  virtual bool send_raw(std::string_view payload);
 
  protected:
   // Per-venue hooks. Each returns false if it could not proceed, which drops

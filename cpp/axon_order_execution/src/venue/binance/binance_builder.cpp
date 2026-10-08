@@ -78,9 +78,9 @@ void each_place_param(const models::OrderRequest& req, std::string_view api_key,
                       Emit&& emit) noexcept {
   const bool limit = req.order_type == models::OrderType::kLimit;
   emit("apiKey", [&](Writer& w) { w.raw(api_key); });
-  if (req.label.has_value() && !req.label->empty()) {
-    emit("newClientOrderId", [&](Writer& w) { w.raw(*req.label); });
-  }
+  // Always sent: the label, or our internal_order_id. See
+  // OrderRequest::venue_client_id.
+  emit("newClientOrderId", [&](Writer& w) { w.raw(req.venue_client_id()); });
   if (limit) {
     emit("price", [&](Writer& w) {
       if (req.price.has_value()) {
@@ -181,7 +181,7 @@ std::size_t BinanceBuilder::ws_place_order(char* out, std::size_t cap,
                                            int recv_window_ms) {
   // A label needing JSON escaping cannot be signed raw and sent escaped.
   // Rejecting beats signing one thing and sending another.
-  if (req.label.has_value() && !is_signing_safe(*req.label)) {
+  if (!is_signing_safe(req.venue_client_id())) {
     return 0;
   }
   const std::int64_t id = next_id();

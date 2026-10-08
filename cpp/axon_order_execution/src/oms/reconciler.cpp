@@ -81,32 +81,103 @@ void Reconciler::run_order_pass() {
   order_pass_in_flight_ = true;
   ++stats_.order_passes;
 
-  for (const auto& currency : config_.portfolio.currencies) {
+  const auto& currencies = config_.portfolio.currencies;
+  if (currencies.empty()) {
+    order_pass_in_flight_ = false;
+    return;
+  }
+  order_replies_outstanding_ = currencies.size();
+  order_pass_failed_ = false;
+  open_order_ids_.clear();
+
+  for (const auto& currency : currencies) {
     rest_->get_open_orders(
         currency,
         [this, currency](std::vector<models::Order> orders, const std::string& error) {
-          order_pass_in_flight_ = false;
           if (!error.empty()) {
+            order_pass_failed_ = true;
             ++stats_.failures;
             util::get_metrics().inc_reconciler_failure("order", exchange_.name);
             AXON_LOG_WARN(log(), "[{}] order reconciliation failed: {}",
                             exchange_.name, error);
-            return;
+          } else {
+            // What the venue lists as open: apply it. OrderStore::reconcile
+            // logs each correction; every one is a message the feed lost.
+            const auto before = orders_->active_orders().size();
+            orders_->reconcile(orders);
+            const auto after = orders_->active_orders().size();
+            if (before != after) {
+              ++stats_.orders_recovered;
+              util::get_metrics().inc_reconciler_recovered("order", exchange_.name);
+            }
+            for (const auto& o : orders) {
+              open_order_ids_.insert(o.order_id);
+            }
+            AXON_LOG_DEBUG(log(), "[{}] reconciled {} open orders for {}",
+                             exchange_.name, orders.size(), currency);
           }
 
-          // What the venue says is open but we think is closed, and vice
-          // versa. OrderStore::reconcile logs each correction; every one is a
-          // message the feed lost.
-          const auto before = orders_->active_orders().size();
-          orders_->reconcile(orders);
-          const auto after = orders_->active_orders().size();
-          if (before != after) {
-            ++stats_.orders_recovered;
-            util::get_metrics().inc_reconciler_recovered("order", exchange_.name);
+          if (--order_replies_outstanding_ > 0) {
+            return;
           }
-          AXON_LOG_DEBUG(log(), "[{}] reconciled {} open orders for {}",
-                           exchange_.name, orders.size(), currency);
+          if (order_pass_failed_) {
+            order_pass_in_flight_ = false;
+            return;
+          }
+          resolve_missing_orders();
         });
+  }
+}
+
+void Reconciler::resolve_missing_orders() {
+  // The other direction: active here, absent there. Applying the snapshot
+  // alone never corrects these -- it only touches orders it lists -- so an
+  // order the venue filled or cancelled while the feed was down would stay
+  // "open" locally forever.
+  std::vector<models::Order> missing;
+  for (auto& order : orders_->active_orders()) {
+    if (order.exchange == exchange_.name && open_order_ids_.count(order.order_id) == 0) {
+      missing.push_back(std::move(order));
+    }
+  }
+  if (missing.empty()) {
+    order_pass_in_flight_ = false;
+    return;
+  }
+  if (missing.size() > kMaxOrderLookupsPerPass) {
+    AXON_LOG_WARN(log(),
+                  "[{}] {} orders are open locally but not at the venue; looking "
+                  "up {} this pass, the rest next pass",
+                  exchange_.name, missing.size(), kMaxOrderLookupsPerPass);
+    missing.resize(kMaxOrderLookupsPerPass);
+  }
+
+  order_lookups_outstanding_ = missing.size();
+  for (const auto& order : missing) {
+    rest_->get_order(order, [this, id = order.order_id](std::optional<models::Order> found,
+                                                        const std::string& error) {
+      if (!error.empty() || !found.has_value()) {
+        ++stats_.failures;
+        util::get_metrics().inc_reconciler_failure("order", exchange_.name);
+        AXON_LOG_WARN(log(), "[{}] could not look up order {}: {}", exchange_.name, id,
+                      error.empty() ? std::string("no order in the reply") : error);
+      } else {
+        if (found->is_terminal()) {
+          // Loud on purpose, like every correction: the feed lost this.
+          ++stats_.closed_orders_recovered;
+          util::get_metrics().inc_reconciler_recovered("order", exchange_.name);
+          AXON_LOG_WARN(log(), "[{}] recovered closed order {}: {} (filled {})",
+                        exchange_.name, id, models::to_string(found->status),
+                        found->filled_amount.to_string());
+        }
+        // Still open is the race where the order reached the venue after the
+        // snapshot was taken; applying it is harmless either way.
+        orders_->reconcile({*found});
+      }
+      if (--order_lookups_outstanding_ == 0) {
+        order_pass_in_flight_ = false;
+      }
+    });
   }
 }
 

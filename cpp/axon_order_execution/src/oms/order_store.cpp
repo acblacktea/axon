@@ -54,8 +54,53 @@ void OrderStore::add_order(models::Order order) {
   // Deliberately no notification here.
 }
 
+std::string OrderStore::submission_key(const std::string& exchange, std::string_view id) {
+  std::string key = exchange;
+  key += ':';
+  key.append(id);
+  return key;
+}
+
+void OrderStore::register_submission(const std::string& exchange,
+                                     const models::OrderRequest& request) {
+  const auto key = submission_key(exchange, request.venue_client_id());
+  submissions_[key] = Submission{request.internal_order_id, request.strategy_id};
+  submission_by_internal_[request.internal_order_id] = key;
+}
+
+void OrderStore::forget_submission(const std::string& exchange,
+                                   const models::OrderRequest& request) {
+  submissions_.erase(submission_key(exchange, request.venue_client_id()));
+  submission_by_internal_.erase(request.internal_order_id);
+}
+
+std::optional<OrderStore::Submission> OrderStore::find_submission(
+    const std::string& exchange, std::string_view venue_client_id) const {
+  if (venue_client_id.empty()) {
+    return std::nullopt;
+  }
+  const auto it = submissions_.find(submission_key(exchange, venue_client_id));
+  if (it == submissions_.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
+void OrderStore::resolve_submission(models::Order& order) const {
+  if (!order.internal_order_id.has_value()) {
+    return;
+  }
+  if (const auto sub = find_submission(order.exchange, *order.internal_order_id)) {
+    order.internal_order_id = sub->internal_order_id;
+    if (!order.strategy_id.has_value()) {
+      order.strategy_id = sub->strategy_id;
+    }
+  }
+}
+
 void OrderStore::update_order(models::Order order) {
   const std::string id = order.order_id;
+  resolve_submission(order);
 
   std::optional<models::Order> existing;
   if (const auto it = cache_.find(id); it != cache_.end()) {
@@ -111,6 +156,15 @@ void OrderStore::update_order(models::Order order) {
       cache_.erase(id);  // (4)
     }
     return;
+  }
+
+  if (terminal && order.internal_order_id.has_value()) {
+    // Nothing further will arrive for this order; drop its submission.
+    if (const auto it = submission_by_internal_.find(*order.internal_order_id);
+        it != submission_by_internal_.end()) {
+      submissions_.erase(it->second);
+      submission_by_internal_.erase(it);
+    }
   }
 
   if (terminal) {

@@ -93,7 +93,36 @@ void EmsService::place_order(const std::string& exchange,
     return;
   }
 
+  // Idempotency. A strategy that resubmits after a timeout carries the same
+  // internal_order_id, and the first attempt may be live; refusing here is
+  // what stops one intent becoming two orders.
+  const std::string key = exchange + ":" + request.internal_order_id;
+  if (submitted_.count(key) != 0) {
+    util::get_metrics().inc_order_place_failure(exchange, "duplicate");
+    callback(OrderResult{false, std::nullopt,
+                         "duplicate internal_order_id " + request.internal_order_id +
+                             ": an order with this id was already sent; confirm "
+                             "its state before resubmitting"});
+    return;
+  }
+
+  if (risk_ != nullptr) {
+    if (const auto refused = risk_->check_new_order(exchange, request, now_seconds())) {
+      util::get_metrics().inc_order_place_failure(exchange, "risk_" + refused->code);
+      AXON_LOG_WARN(log(), "[{}] risk refused {} {}: {}", exchange,
+                    request.internal_order_id, request.instrument, refused->message);
+      callback(OrderResult{false, std::nullopt, "risk: " + refused->message});
+      return;
+    }
+  }
+
   if (place_via_websocket(exchange, *ops, request, callback)) {
+    remember_submission(key);
+    if (risk_ != nullptr) {
+      // Counted from the moment it leaves, not from the ack: a burst sent
+      // before the first ack must still add up against the position limit.
+      risk_->on_order_sent(exchange, request, now_seconds());
+    }
     return;
   }
   // There is no second way to place an order. A venue whose session is not
@@ -128,6 +157,7 @@ bool EmsService::place_via_websocket(const std::string& exchange,
   }
 
   Pending pending;
+  pending.is_place = true;
   pending.exchange = exchange;
   pending.order_callback = callback;
   pending.request = request;
@@ -259,8 +289,15 @@ void EmsService::modify_order(const std::string& exchange,
 
   models::Order existing;
   if (!ops->needs_symbol) {
-    // Deribit amends by order id alone, so nothing has to be looked up.
+    // Deribit amends by order id alone, so nothing HAS to be looked up -- but
+    // the risk check needs the order's instrument, side and size, so use the
+    // local copy when there is one.
     existing.order_id = order_id;
+    if (lookup_) {
+      if (auto found = lookup_(order_id); found.has_value()) {
+        existing = std::move(*found);
+      }
+    }
   } else {
     std::optional<models::Order> found;
     if (lookup_) {
@@ -273,6 +310,17 @@ void EmsService::modify_order(const std::string& exchange,
       return;
     }
     existing = std::move(*found);
+  }
+
+  if (risk_ != nullptr) {
+    if (const auto refused =
+            risk_->check_modify(exchange, existing, amount, price, now_seconds())) {
+      util::get_metrics().inc_order_place_failure(exchange, "risk_" + refused->code);
+      AXON_LOG_WARN(log(), "[{}] risk refused amend of {}: {}", exchange, order_id,
+                    refused->message);
+      callback(OrderResult{false, std::nullopt, "risk: " + refused->message});
+      return;
+    }
   }
 
   if (modify_via_websocket(exchange, *ops, existing, amount, price, callback)) {
@@ -302,6 +350,14 @@ void EmsService::on_rpc_reply(const std::string& exchange, std::int64_t id,
 
   if (!success) {
     util::get_metrics().inc_order_place_failure(exchange, "venue_error");
+    if (pending.is_place) {
+      // A definite no: nothing is live, so the same id may be retried.
+      const std::string key = exchange + ":" + pending.request.internal_order_id;
+      submitted_.erase(key);
+      if (risk_ != nullptr) {
+        risk_->on_order_rejected(exchange, pending.request);
+      }
+    }
     pending.order_callback(OrderResult{false, std::nullopt, std::string(error)});
     return;
   }
@@ -315,6 +371,17 @@ void EmsService::on_rpc_reply(const std::string& exchange, std::int64_t id,
     return;
   }
   pending.order_callback(ops->interpret_reply(payload, pending.request));
+}
+
+void EmsService::remember_submission(const std::string& key) {
+  if (!submitted_.insert(key).second) {
+    return;
+  }
+  submitted_order_.push_back(key);
+  while (submitted_order_.size() > kMaxRememberedSubmissions) {
+    submitted_.erase(submitted_order_.front());
+    submitted_order_.pop_front();
+  }
 }
 
 void EmsService::poll() {
@@ -332,8 +399,11 @@ void EmsService::poll() {
     AXON_LOG_WARN(log(), "request {} timed out", it->first);
     util::get_metrics().inc_order_place_failure(it->second.exchange, "timeout");
     if (it->second.order_callback) {
-      it->second.order_callback(
-          OrderResult{false, std::nullopt, "the venue did not reply in time"});
+      // Sent, unanswered: the venue may well have acted on it. Unknown, not
+      // failed -- and the id stays remembered so a blind retry is refused.
+      OrderResult unknown{false, std::nullopt, "the venue did not reply in time"};
+      unknown.outcome_unknown = true;
+      it->second.order_callback(unknown);
     } else if (it->second.bool_callback) {
       it->second.bool_callback(false, "the venue did not reply in time");
     }

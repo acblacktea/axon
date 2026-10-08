@@ -72,6 +72,8 @@ class Reconciler {
     std::uint64_t fill_passes = 0;
     std::uint64_t position_passes = 0;
     std::uint64_t orders_recovered = 0;
+    // Orders the feed never reported closing, found by the lookup above.
+    std::uint64_t closed_orders_recovered = 0;
     std::uint64_t fills_recovered = 0;
     std::uint64_t failures = 0;
   };
@@ -79,6 +81,12 @@ class Reconciler {
 
  private:
   void run_order_pass();
+  // Second half of an order pass: every order still active locally that the
+  // venue's open-orders snapshot did not list has closed without the feed
+  // telling us. Each is looked up individually for its FINAL state -- filled
+  // and cancelled are not interchangeable -- exactly as the Python
+  // OrderReconciler does.
+  void resolve_missing_orders();
   void run_fill_pass();
   void run_position_pass();
   double now_seconds() const;
@@ -95,6 +103,17 @@ class Reconciler {
   // Only one pass of each kind in flight; a slow venue must not queue up
   // overlapping snapshots that then apply out of order.
   bool order_pass_in_flight_ = false;
+  // An order pass fans out one open-orders call per configured currency.
+  // Missing orders are only looked for once EVERY reply is in and none
+  // failed: an order absent from an incomplete snapshot proves nothing.
+  std::size_t order_replies_outstanding_ = 0;
+  bool order_pass_failed_ = false;
+  std::unordered_set<std::string> open_order_ids_;
+  std::size_t order_lookups_outstanding_ = 0;
+  // Bounds the single-order lookups one pass may issue. A venue answering
+  // with a truncated snapshot would otherwise turn every local order into a
+  // signed request at once -- which is how an IP gets rate-limit banned.
+  static constexpr std::size_t kMaxOrderLookupsPerPass = 20;
   bool fill_pass_in_flight_ = false;
   bool position_pass_in_flight_ = false;
 

@@ -20,6 +20,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
@@ -44,6 +45,13 @@ struct Command {
     return models::command_type_from_string(command_type);
   }
 };
+
+// Leads the error of a failed response whose order may nonetheless be LIVE at
+// the venue -- the request went out and no verdict came back. A strategy must
+// not resubmit on seeing it; it confirms the order's state first, by its
+// internal_order_id. Carried in the error text rather than a new field so the
+// wire format stays identical to the Python implementation's.
+inline constexpr std::string_view kOutcomeUnknownPrefix = "OUTCOME_UNKNOWN: ";
 
 // Engine -> strategy (ROUTER -> DEALER).
 struct Response {

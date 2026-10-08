@@ -292,7 +292,53 @@ export AXON_OKX_PASSPHRASE=...
 
 `AXON_<EXCHANGE>_API_KEY` / `_API_SECRET` / `_PASSPHRASE` 会覆盖文件里的值。
 
-### 3.3 跑引擎
+### 3.3 风控（pre-trade risk）
+
+每一笔下单和改单，在发往交易所之前都要经过引擎里的风控检查。ZMQ、共享内存以及以后新增的任何入口都会经过这里，
+所以策略出 bug 时，引擎是最后一道防线。**撤单从不检查**：降低风险的操作永远放行。
+
+```yaml
+cpp:
+  risk:
+    enabled: true                          # false 只关掉限额，熔断开关照样生效
+    max_orders_per_strategy_per_second: 20 # 每个策略每秒最多下单数，0 = 不限
+    reference_price_max_age_seconds: 60    # 参考价超过这个年龄视为没有
+    reference_refresh_seconds: 5           # 对下面列出的 exchange:instrument 定期拉 ticker
+    kill_switch_file: /var/run/axon.kill   # 文件存在 = 熔断
+    cancel_all_on_kill: true               # 熔断时撤掉所有挂单
+    defaults:                              # 对所有合约生效
+      max_order_notional: 50000            # 单笔 |价格 × 数量|，计价货币
+      max_price_deviation: 0.05            # 限价偏离参考价超过 5% 拒单
+    instruments:                           # 按字段覆盖 defaults
+      "binance:BTCUSDT":
+        max_order_qty: 0.5                 # 单笔数量，交易所单位（这里是 BTC）
+        max_position: 2                    # 最坏情况净持仓上限
+```
+
+检查顺序：熔断开关 → 下单频率 → 单笔数量和名义价值 → 价格偏离 → 持仓。
+
+- **持仓**用的是"最坏情况"：交易所持仓（对账器定期刷新），加上之后到达的成交，再加上**所有在途挂单**全部成交后的结果。
+  已经发出、还没收到交易所确认的单也计入，否则失控策略在第一笔回执回来之前打出的一串单都能绕过限额。
+  减仓方向的单子永远放行，即使当前持仓已经超过限额。
+- **参考价**来自三个来源：持仓的标记价格、最新成交价、对 `instruments` 里 `exchange:instrument` 定期拉的 ticker 中间价。
+  需要参考价的检查（市价单的名义价值、价格偏离）**拿不到新鲜参考价就拒单**，不会跳过检查。
+- 数量和价格都是**交易所单位**：Binance BTCUSDT 的数量是 BTC，Deribit BTC-PERPETUAL 的数量是 USD 合约数。
+- 没配任何限额时引擎照常启动，但会打一条醒目的警告。
+
+**熔断开关（kill switch）**：
+
+```bash
+touch /var/run/axon.kill        # 熔断：拒绝一切新单，并按配置撤掉所有挂单
+rm /var/run/axon.kill           # 恢复（只解除由文件触发的熔断）
+kill -USR1 <engine-pid>         # 信号方式熔断
+kill -USR2 <engine-pid>         # 信号方式恢复
+```
+
+被风控拒绝的单子会在本地直接回复 `risk: <原因>`，不会发到交易所；同时计入
+`axon_order_place_failure_total{error_type="risk_<code>"}`，code 取值为 `kill_switch` / `rate` / `order_qty` /
+`order_notional` / `price_deviation` / `no_reference_price` / `position`。
+
+### 3.4 跑引擎
 
 ```bash
 ./build/axon_engine --config config.yaml
@@ -305,7 +351,7 @@ export AXON_OKX_PASSPHRASE=...
 `SIGINT` / `SIGTERM` 优雅退出：停 ZMQ 和共享内存 → 停 trade session → 停行情会话 →
 把队列里的写刷进 Postgres。
 
-### 3.4 写策略
+### 3.5 写策略
 
 #### 走 ZMQ（通用，不需要同机）
 
@@ -387,7 +433,7 @@ while (running) {
 ./build/axon_strategy --id my_strategy --shm /dev/shm --watch
 ```
 
-### 3.5 观测
+### 3.6 观测
 
 Prometheus 端点默认在 `http://0.0.0.0:9100/metrics`。
 
@@ -436,7 +482,7 @@ Prometheus 端点默认在 `http://0.0.0.0:9100/metrics`。
 `axon_hot_stage_dropped` 持续非零，在没有 invariant TSC 的机器上意味着计数器被跨核读取
 ——**坏掉的是测量，不是引擎**。
 
-### 3.6 测试与基准
+### 3.7 测试与基准
 
 ```bash
 ctest --test-dir build                        # 395 个

@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+#include "axon/core/decimal.h"
+
 namespace axon {
 
 struct ExchangeConfig {
@@ -111,6 +113,47 @@ struct RuntimeConfig {
   std::uint32_t shm_slots = 4096;
 };
 
+// Pre-trade limits for one instrument. Every limit is optional; an absent one
+// is not checked. Quantities are in the VENUE'S units for that instrument --
+// BTC on Binance's BTCUSDT, USD contracts on Deribit's BTC-PERPETUAL -- and
+// notionals in its quote currency.
+struct RiskLimits {
+  std::optional<core::Qty> max_order_qty;
+  // |price x quantity| of one order. A market order is valued at the
+  // reference price, and refused when there is no fresh one.
+  std::optional<core::Price> max_order_notional;
+  // Worst-case |net position| if every working order filled: the venue's
+  // position plus every open order on the side that grows it.
+  std::optional<core::Qty> max_position;
+  // How far a limit price may sit from the reference price, as a fraction
+  // (0.05 = 5%). Catches a fat-fingered or mis-scaled price.
+  std::optional<double> max_price_deviation;
+};
+
+// The engine's pre-trade risk layer, from `cpp.risk`. It sits in the EMS, so
+// every order path -- ZMQ, shared memory, anything added later -- goes
+// through it; strategies are not trusted to police themselves.
+struct RiskConfig {
+  // false skips the limit checks. The kill switch works regardless.
+  bool enabled = true;
+  RiskLimits defaults;
+  // Keyed "exchange:instrument" (preferred) or "instrument". An entry
+  // overrides `defaults` field by field.
+  std::map<std::string, RiskLimits> instruments;
+  // Orders a single strategy may submit per second. 0 = unlimited.
+  int max_orders_per_strategy_per_second = 0;
+  // A reference price older than this is treated as absent.
+  double reference_price_max_age_seconds = 60.0;
+  // How often the engine refreshes reference prices over REST for the
+  // instruments named in `instruments` (as exchange:instrument).
+  int reference_refresh_seconds = 5;
+  // While this file exists, the kill switch is engaged. Empty disables it.
+  // `touch` to stop trading, `rm` to resume. SIGUSR1 / SIGUSR2 do the same.
+  std::string kill_switch_file;
+  // Cancel every working order when the kill switch engages.
+  bool cancel_all_on_kill = true;
+};
+
 struct Config {
   std::map<std::string, ExchangeConfig> exchanges;
   ReconciliationConfig reconciliation;
@@ -121,6 +164,7 @@ struct Config {
   std::optional<DatabaseConfig> database;
   MetricsConfig metrics;
   RuntimeConfig runtime;
+  RiskConfig risk;
 };
 
 // Throws std::runtime_error if the file is missing or malformed.

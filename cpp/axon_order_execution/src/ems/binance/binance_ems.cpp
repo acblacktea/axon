@@ -2,6 +2,9 @@
 
 #include <string>
 
+#include "axon/venue/binance/binance_parser.h"
+#include "axon/venue/json_view.h"
+
 namespace axon::ems::binance {
 namespace {
 
@@ -57,9 +60,52 @@ std::size_t build_modify(char* buf, std::size_t cap,
                                    ctx.now_ms, id);
 }
 
-// Acceptance only; the feed carries the real state.
-OrderResult interpret_reply(std::string_view, const models::OrderRequest&) {
-  return OrderResult{true, std::nullopt, {}};
+// ws-fapi answers order.place with the order as the venue recorded it:
+//   {"id":"7","status":200,"result":{"orderId":..,"symbol":..,"status":"NEW",
+//    "clientOrderId":..,"price":..,"origQty":..,"executedQty":..,"avgPrice":..,
+//    "type":..,"side":..,"updateTime":..},"rateLimits":[..]}
+// Returning it is what gives a strategy the venue order id for what it just
+// placed. The feed still carries the authoritative state afterwards; a reply
+// that cannot be read is accepted without an order, as before.
+OrderResult interpret_reply(std::string_view payload, const models::OrderRequest& request) {
+  static thread_local venue::Document doc(64 * 1024);
+  auto root = doc.parse_copy(payload);
+  auto result = root.has_value() ? (*root)["result"].as_object() : std::nullopt;
+  if (!result.has_value()) {
+    return OrderResult{true, std::nullopt, {}};
+  }
+  auto& r = *result;
+  const auto order_id = r["orderId"].as_int();
+  const auto symbol = r["symbol"].as_string();
+  if (!order_id.has_value() || !symbol.has_value()) {
+    return OrderResult{true, std::nullopt, {}};
+  }
+
+  models::Order o;
+  o.order_id = std::to_string(*order_id);
+  o.exchange = "binance";
+  o.instrument = std::string(*symbol);
+  o.status = venue::binance::map_order_status(r["status"].as_string().value_or("NEW")).status;
+  const auto price = r["price"].as_decimal();
+  if (price.has_value() && !price->is_zero()) {
+    o.price = price;
+  }
+  o.amount = r["origQty"].as_decimal().value_or(request.amount);
+  o.filled_amount = r["executedQty"].as_decimal().value_or(core::Qty{});
+  const auto avg = r["avgPrice"].as_decimal();
+  if (avg.has_value() && !avg->is_zero()) {
+    o.average_price = avg;
+  }
+  o.side = request.side;
+  o.order_type = request.order_type;
+  o.post_only = request.post_only;
+  o.label = request.label;
+  o.internal_order_id = request.internal_order_id;
+  o.strategy_id = request.strategy_id;
+  const auto updated = r["updateTime"].as_int();
+  o.created_at = core::Timestamp::from_millis(updated.value_or(0));
+  o.updated_at = o.created_at;
+  return OrderResult{true, std::move(o), {}};
 }
 
 }  // namespace

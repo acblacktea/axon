@@ -277,7 +277,14 @@ class BinanceParser {
     order.exchange_ts_ns =
         event_time.has_value() ? core::Timestamp::from_millis(*event_time).ns()
                                : 0;
+    // `c` is the client order id we sent -- our internal_order_id, or the
+    // strategy's label -- and it is what ties this update to the request that
+    // produced it. The OMS maps a label back to its request. An id too long
+    // for the field (one we did not send) is left empty.
     order.internal_order_id.clear();
+    if (client_id.has_value()) {
+      static_cast<void>(order.internal_order_id.assign(*client_id));
+    }
     order.strategy_id.clear();
     std::memset(order.reserved, 0, sizeof(order.reserved));
 
@@ -314,9 +321,6 @@ class BinanceParser {
     fill.strategy_id.clear();
     std::memset(fill.reserved, 0, sizeof(fill.reserved));
 
-    // The client order id is our label; keep it out of the hot message but
-    // note it exists. (Consumers recover it from their own order book.)
-    static_cast<void>(client_id);
     return true;
   }
 

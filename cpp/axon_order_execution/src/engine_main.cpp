@@ -17,6 +17,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <map>
@@ -31,6 +32,7 @@
 #include "axon/oms/order_store.h"
 #include "axon/oms/portfolio_store.h"
 #include "axon/oms/reconciler.h"
+#include "axon/oms/risk_manager.h"
 #include "axon/oms/venue_rest.h"
 #include "axon/repository/postgres.h"
 #include "axon/oms/venue_session.h"
@@ -44,8 +46,18 @@
 namespace {
 
 std::atomic<bool> g_stop{false};
+// SIGUSR1 engages the kill switch, SIGUSR2 releases it. Set here, acted on by
+// the engine loop -- nothing else is safe to do inside a signal handler.
+std::atomic<bool> g_kill_requested{false};
+std::atomic<bool> g_release_requested{false};
 
 void on_signal(int) { g_stop.store(true, std::memory_order_release); }
+void on_kill_signal(int) { g_kill_requested.store(true, std::memory_order_release); }
+void on_release_signal(int) { g_release_requested.store(true, std::memory_order_release); }
+
+bool any_limit(const axon::RiskLimits& l) {
+  return l.max_order_qty || l.max_order_notional || l.max_position || l.max_price_deviation;
+}
 
 // ---------------------------------------------------------------------------
 class Engine {
@@ -104,6 +116,23 @@ class Engine {
     ems_->set_order_lookup([this](const std::string& order_id) {
       return orders_.get_order(order_id);
     });
+
+    // --- pre-trade risk -----------------------------------------------------
+    risk_ = axon::oms::RiskManager(config_.risk);
+    ems_->set_risk_manager(&risk_);
+    bool limits_configured = any_limit(config_.risk.defaults) ||
+                             config_.risk.max_orders_per_strategy_per_second > 0;
+    for (const auto& [_, l] : config_.risk.instruments) limits_configured |= any_limit(l);
+    if (!config_.risk.enabled || !limits_configured) {
+      // Loud: an engine with no limits sends whatever a strategy's bug says.
+      AXON_LOG_WARN(log_,
+                    "NO PRE-TRADE RISK LIMITS ARE CONFIGURED (cpp.risk). Every order a "
+                    "strategy sends will reach the venue. Only the kill switch applies.");
+    } else {
+      AXON_LOG_INFO(log_, "pre-trade risk: {} instrument override(s), {} orders/s/strategy",
+                    config_.risk.instruments.size(),
+                    config_.risk.max_orders_per_strategy_per_second);
+    }
 
     // --- venue sessions ---------------------------------------------------
     for (const auto& entry : config_.exchanges) {
@@ -206,6 +235,10 @@ class Engine {
         rc.on_positions = [this, venue_name](
                               const std::vector<axon::models::Position>& positions) {
           portfolio_.update_positions(venue_name, positions);
+          risk_.on_positions(venue_name, positions);
+          for (const auto& p : positions) {
+            risk_.update_reference_price(venue_name, p.instrument, p.mark_price, seconds());
+          }
         };
         reconcilers_[venue_name] = std::make_unique<axon::oms::Reconciler>(
             config_, exchange, rest_ptr, &orders_, std::move(rc));
@@ -278,6 +311,8 @@ class Engine {
       zmq_.poll();
       ++iterations;
 
+      poll_risk();
+
       // A heartbeat line, so a silent engine is distinguishable from a wedged
       // one. Rate-limited to once a minute; it is not on any critical path.
       const double now = seconds();
@@ -314,6 +349,93 @@ class Engine {
     }
 
     AXON_LOG_INFO(log_, "engine stopping after {} iterations", iterations);
+  }
+
+  // Kill switch triggers and reference-price refresh. Cheap checks every
+  // iteration; anything that touches the filesystem or the network is
+  // rate-limited, since this runs on the hot loop.
+  void poll_risk() {
+    if (g_kill_requested.exchange(false, std::memory_order_acq_rel)) {
+      engage_kill_switch("SIGUSR1");
+    }
+    if (g_release_requested.exchange(false, std::memory_order_acq_rel)) {
+      risk_.release_kill_switch();
+      kill_by_file_ = false;
+    }
+
+    const double now = seconds();
+    if (now - last_risk_tick_ < 1.0) {
+      return;
+    }
+    last_risk_tick_ = now;
+
+    // The file is level-triggered: present means stopped. Only a file-engaged
+    // switch is released by removing the file, so deleting it cannot undo a
+    // SIGUSR1 someone sent for a different reason.
+    if (!config_.risk.kill_switch_file.empty()) {
+      std::error_code ec;
+      const bool present = std::filesystem::exists(config_.risk.kill_switch_file, ec);
+      if (present && !risk_.kill_switch_engaged()) {
+        engage_kill_switch("kill switch file " + config_.risk.kill_switch_file);
+        kill_by_file_ = true;
+      } else if (!present && kill_by_file_) {
+        risk_.release_kill_switch();
+        kill_by_file_ = false;
+      }
+    }
+
+    if (config_.risk.reference_refresh_seconds > 0 &&
+        now - last_reference_refresh_ >= config_.risk.reference_refresh_seconds) {
+      last_reference_refresh_ = now;
+      refresh_reference_prices();
+    }
+  }
+
+  void engage_kill_switch(const std::string& reason) {
+    if (risk_.kill_switch_engaged()) {
+      return;
+    }
+    risk_.engage_kill_switch(reason);
+    if (!config_.risk.cancel_all_on_kill) {
+      return;
+    }
+    const auto working = orders_.active_orders();
+    AXON_LOG_ERROR(log_, "kill switch: cancelling {} working order(s)", working.size());
+    for (const auto& order : working) {
+      ems_->cancel_order(order.exchange, order.order_id,
+                         [this, id = order.order_id](bool ok, const std::string& error) {
+                           if (!ok) {
+                             AXON_LOG_ERROR(log_, "kill switch: cancel of {} failed: {}",
+                                            id, error);
+                           }
+                         });
+    }
+  }
+
+  // For every "exchange:instrument" named under cpp.risk.instruments, fetch a
+  // ticker and use its mid as the reference price. Positions and fills keep
+  // references fresh for instruments being traded; this covers the ones that
+  // are not yet, which is exactly when a fat-fingered first order lands.
+  void refresh_reference_prices() {
+    for (const auto& [key, _] : config_.risk.instruments) {
+      const auto colon = key.find(':');
+      if (colon == std::string::npos) {
+        continue;
+      }
+      const std::string exchange = key.substr(0, colon);
+      const std::string instrument = key.substr(colon + 1);
+      const auto rest = rests_.find(exchange);
+      if (rest == rests_.end()) {
+        continue;
+      }
+      rest->second->get_ticker(
+          instrument, [this, exchange, instrument](std::optional<axon::models::Ticker> t,
+                                                   const std::string&) {
+            if (t.has_value() && t->best_bid_price.raw() > 0 && t->best_ask_price.raw() > 0) {
+              risk_.update_reference_price(exchange, instrument, t->mid(), seconds());
+            }
+          });
+    }
   }
 
   // Publishes the closing latency window to Prometheus, then opens a new one.
@@ -368,7 +490,18 @@ class Engine {
     return static_cast<double>(axon::core::monotonic_ns()) / 1e9;
   }
 
-  void on_order_update(const axon::transport::OrderUpdateMsg& msg) {
+  void on_order_update(const axon::transport::OrderUpdateMsg& venue_msg) {
+    // The venue echoes the client order id we sent, which the parser put in
+    // internal_order_id. Map it back to the request that produced it -- its
+    // real internal id and, above all, its strategy -- before publishing, or
+    // the update goes to every strategy (and to none in particular).
+    axon::transport::OrderUpdateMsg msg = venue_msg;
+    if (const auto sub = orders_.find_submission(std::string(msg.exchange.view()),
+                                                 msg.internal_order_id.view())) {
+      static_cast<void>(msg.internal_order_id.assign(sub->internal_order_id));
+      static_cast<void>(msg.strategy_id.assign(sub->strategy_id.value_or(std::string())));
+    }
+
     // FAST PATH FIRST. The bytes go to the co-located strategies before
     // anything below allocates, because everything below is the control-plane
     // copy and none of it is on the strategy's critical path.
@@ -378,10 +511,22 @@ class Engine {
     // known compromise: OrderStore is built around the domain Order the Python
     // uses, and converting to it here is what keeps the two implementations
     // behaviourally identical.
-    orders_.update_from_ws(axon::transport::decode_order_update(msg));
+    auto order = axon::transport::decode_order_update(msg);
+    risk_.on_order_update(order);
+    orders_.update_from_ws(std::move(order));
   }
 
-  void on_fill(const axon::transport::FillMsg& msg) {
+  void on_fill(const axon::transport::FillMsg& venue_msg) {
+    // A venue fill carries no strategy; the order it belongs to does. The
+    // order update for it is always handled first (see the parsers), so it is
+    // known by now.
+    axon::transport::FillMsg msg = venue_msg;
+    if (msg.strategy_id.empty()) {
+      if (const auto order = orders_.get_order(std::string(msg.order_id.view()));
+          order.has_value() && order->strategy_id.has_value()) {
+        static_cast<void>(msg.strategy_id.assign(*order->strategy_id));
+      }
+    }
     const auto fill = axon::transport::decode_fill(msg);
     // Tell the reconciler we have seen this trade_id, so its next pass does
     // not "recover" a fill that arrived normally and double-count it.
@@ -394,6 +539,8 @@ class Engine {
     if (!fills_.add_fill(fill)) {
       return;
     }
+    risk_.on_fill(fill);
+    risk_.update_reference_price(fill.exchange, fill.instrument, fill.price, seconds());
     // Forward the ORIGINAL bytes rather than re-encoding the decoded copy.
     shm_.publish_fill(msg, msg.strategy_id.view());
     publish_fill_event(fill);
@@ -405,6 +552,7 @@ class Engine {
     if (!fills_.add_fill(fill)) {
       return;
     }
+    risk_.on_fill(fill);
     AXON_LOG_WARN(log_, "recovered fill {} for order {}", fill.trade_id,
                     fill.order_id);
     if (shm_.active()) {
@@ -437,11 +585,20 @@ class Engine {
     request.strategy_id = strategy;
     const std::string exchange(msg.exchange.view());
     const double started = seconds();
+    orders_.register_submission(exchange, request);
     ems_->place_order(exchange, request,
-                      [this, exchange, started](const axon::ems::OrderResult& r) {
+                      [this, exchange, request, started](const axon::ems::OrderResult& r) {
                         axon::util::get_metrics().observe_order_submit_latency(
                             exchange, seconds() - started);
                         if (!r.success) {
+                          if (r.outcome_unknown) {
+                            // The strategy learns the outcome from the order
+                            // update, which the submission routes back to it.
+                            AXON_LOG_WARN(log_, "[{}] hot place {} outcome unknown: {}",
+                                            exchange, request.internal_order_id, r.error);
+                            return;
+                          }
+                          orders_.forget_submission(exchange, request);
                           axon::util::get_metrics().inc_order_place_failure(
                               exchange, "rejected");
                           AXON_LOG_WARN(log_, "[{}] hot place rejected: {}",
@@ -555,15 +712,26 @@ class Engine {
 
         const std::string request_id = command.request_id;
         const double started = seconds();
+        orders_.register_submission(exchange, *request);
         // DEFERRED. Placing an order is a network round trip; replying inline
         // would stall every venue feed for its duration.
         ems_->place_order(
             exchange, *request,
-            [this, sink, request_id, exchange, started](
+            [this, sink, request_id, exchange, started, req = *request](
                 const axon::ems::OrderResult& result) mutable {
               axon::util::get_metrics().observe_order_submit_latency(
                   exchange, seconds() - started);
               if (!result.success) {
+                if (result.outcome_unknown) {
+                  // Not a rejection: the order may be live. The prefix tells
+                  // the strategy not to resubmit, and the submission stays
+                  // registered so the venue's update still finds its way back.
+                  sink(Response::fail(
+                      request_id, std::string(axon::transport::kOutcomeUnknownPrefix) +
+                                      result.error));
+                  return;
+                }
+                orders_.forget_submission(exchange, req);
                 axon::util::get_metrics().inc_order_place_failure(exchange,
                                                                    "rejected");
                 sink(Response::fail(request_id, result.error));
@@ -687,6 +855,10 @@ class Engine {
   // EMS pointer that references it would be a use-after-free on shutdown.
   std::vector<std::unique_ptr<axon::oms::VenueSession>> trade_sessions_;
   axon::oms::OrderStore orders_;
+  axon::oms::RiskManager risk_;
+  bool kill_by_file_ = false;
+  double last_risk_tick_ = 0.0;
+  double last_reference_refresh_ = 0.0;
   axon::oms::FillStore fills_;
   axon::oms::PortfolioStore portfolio_;
   axon::transport::ZmqServer zmq_;
@@ -756,6 +928,8 @@ int main(int argc, char** argv) {
 
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
+  std::signal(SIGUSR1, on_kill_signal);
+  std::signal(SIGUSR2, on_release_signal);
 
   Engine engine(std::move(config));
   try {

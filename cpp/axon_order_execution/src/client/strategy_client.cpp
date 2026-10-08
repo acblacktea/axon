@@ -2,6 +2,7 @@
 
 #include <zmq.hpp>
 
+#include <chrono>
 #include <cstring>
 
 #include "axon/core/clock.h"
@@ -214,7 +215,10 @@ std::size_t StrategyClient::poll() {
 // ---------------------------------------------------------------------------
 std::optional<transport::Json> StrategyClient::request(
     const std::string& command_type, const transport::Json& payload,
-    std::string& error) {
+    std::string& error, bool* timed_out_out) {
+  if (timed_out_out != nullptr) {
+    *timed_out_out = false;
+  }
   if (!impl_->dealer) {
     error = "not connected";
     return std::nullopt;
@@ -234,26 +238,68 @@ std::optional<transport::Json> StrategyClient::request(
     impl_->dealer->send(zmq::message_t(bytes.data(), bytes.size()),
                         zmq::send_flags::none);
 
-    zmq::message_t frame;
-    std::string last;
-    // Read the whole multipart; the reply body is the final frame.
+    // Replies are matched to this request by request_id, never by arrival
+    // order. A request that times out here is still answered later -- the
+    // engine's own wait on the venue (websocket.request_timeout_seconds, 30s
+    // by default) is longer than ours -- and that late reply sits in the
+    // socket. Taking the next reply blindly would hand it to the NEXT request,
+    // and every request after that would get its predecessor's answer.
+    //
+    // One deadline covers the whole wait, so discarding stale replies cannot
+    // stretch a request past its timeout.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(config_.request_timeout_ms);
+    std::optional<transport::Response> response;
     for (;;) {
-      if (!impl_->dealer->recv(frame, zmq::recv_flags::none).has_value()) {
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+          deadline - std::chrono::steady_clock::now());
+      if (remaining.count() <= 0) {
         error = "request timed out";
+        ++stats_.request_failures;
+        if (timed_out_out != nullptr) {
+          *timed_out_out = true;
+        }
+        return std::nullopt;
+      }
+      impl_->dealer->set(zmq::sockopt::rcvtimeo, static_cast<int>(remaining.count()));
+
+      zmq::message_t frame;
+      std::string last;
+      // Read the whole multipart; the reply body is the final frame.
+      bool timed_out = false;
+      for (;;) {
+        if (!impl_->dealer->recv(frame, zmq::recv_flags::none).has_value()) {
+          timed_out = true;
+          break;
+        }
+        last.assign(static_cast<const char*>(frame.data()), frame.size());
+        if (!frame.more()) {
+          break;
+        }
+      }
+      if (timed_out) {
+        error = "request timed out";
+        ++stats_.request_failures;
+        if (timed_out_out != nullptr) {
+          *timed_out_out = true;
+        }
+        return std::nullopt;
+      }
+
+      response = transport::deserialize_response(last);
+      if (!response.has_value()) {
+        error = "malformed response";
         ++stats_.request_failures;
         return std::nullopt;
       }
-      last.assign(static_cast<const char*>(frame.data()), frame.size());
-      if (!frame.more()) {
+      if (response->request_id == command.request_id) {
         break;
       }
-    }
-
-    const auto response = transport::deserialize_response(last);
-    if (!response.has_value()) {
-      error = "malformed response";
-      ++stats_.request_failures;
-      return std::nullopt;
+      ++stats_.stale_replies;
+      AXON_LOG_WARN(log(),
+                    "discarded a late reply to request {} while waiting for {}; "
+                    "an earlier request timed out",
+                    response->request_id, command.request_id);
     }
     if (!response->success) {
       error = response->error.value_or("request failed");
@@ -268,17 +314,44 @@ std::optional<transport::Json> StrategyClient::request(
   }
 }
 
-std::optional<models::Order> StrategyClient::place_order(
-    const std::string& exchange, const models::OrderRequest& req,
-    std::string& error) {
+PlaceResult StrategyClient::submit_order(const std::string& exchange,
+                                         const models::OrderRequest& req) {
+  PlaceResult out;
+  out.internal_order_id = req.internal_order_id;
+
   transport::Json payload = transport::Json::object();
   payload["exchange"] = exchange;
   payload["request"] = transport::to_json(req);
-  const auto data = request("place_order", payload, error);
-  if (!data.has_value() || data->is_null()) {
-    return std::nullopt;
+  bool timed_out = false;
+  const auto data = request("place_order", payload, out.error, &timed_out);
+
+  if (data.has_value()) {
+    out.outcome = PlaceOutcome::kAccepted;
+    if (!data->is_null()) {
+      out.order = transport::order_from_json(*data);
+    }
+    return out;
   }
-  return transport::order_from_json(*data);
+  // Our own timeout, or the engine's report of the venue's silence: either
+  // way the request may have reached the venue.
+  const bool engine_unknown = out.error.rfind(transport::kOutcomeUnknownPrefix, 0) == 0;
+  if (timed_out || engine_unknown) {
+    out.outcome = PlaceOutcome::kUnknown;
+    if (timed_out) {
+      out.error = std::string(transport::kOutcomeUnknownPrefix) + out.error;
+    }
+    return out;
+  }
+  out.outcome = PlaceOutcome::kRejected;
+  return out;
+}
+
+std::optional<models::Order> StrategyClient::place_order(
+    const std::string& exchange, const models::OrderRequest& req,
+    std::string& error) {
+  auto result = submit_order(exchange, req);
+  error = result.error;
+  return result.accepted() ? std::move(result.order) : std::nullopt;
 }
 
 bool StrategyClient::cancel_order(const std::string& exchange,

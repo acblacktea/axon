@@ -21,6 +21,33 @@ T get_or(const YAML::Node& node, const char* key, T fallback) {
   return child.as<T>();
 }
 
+// A decimal limit may be written as a YAML number or string; both are read as
+// text so it goes through the exact decimal parser, never a double.
+template <typename D>
+std::optional<D> decimal_or_none(const YAML::Node& node, const char* key) {
+  if (!node || !node.IsMap() || !node[key] || node[key].IsNull()) {
+    return std::nullopt;
+  }
+  const auto text = node[key].as<std::string>();
+  auto value = D::from_string(text);
+  if (!value.has_value()) {
+    throw std::runtime_error(std::string("risk limit '") + key + "' is not a number: " + text);
+  }
+  return value;
+}
+
+RiskLimits read_limits(const YAML::Node& node) {
+  RiskLimits l;
+  l.max_order_qty = decimal_or_none<core::Qty>(node, "max_order_qty");
+  l.max_order_notional = decimal_or_none<core::Price>(node, "max_order_notional");
+  l.max_position = decimal_or_none<core::Qty>(node, "max_position");
+  if (node && node.IsMap() && node["max_price_deviation"] &&
+      !node["max_price_deviation"].IsNull()) {
+    l.max_price_deviation = node["max_price_deviation"].as<double>();
+  }
+  return l;
+}
+
 std::string upper(std::string s) {
   for (char& c : s) {
     c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -136,6 +163,24 @@ Config load_config(const std::string& path) {
   config.runtime.shm_directory =
       get_or<std::string>(cpp, "shm_directory", "/dev/shm");
   config.runtime.shm_slots = get_or<std::uint32_t>(cpp, "shm_slots", 4096);
+
+  // Under `cpp:` because the Python loader ignores that section; a top-level
+  // `risk:` would make a shared config.yaml fail to load there.
+  const YAML::Node risk = cpp ? cpp["risk"] : YAML::Node();
+  config.risk.enabled = get_or(risk, "enabled", true);
+  config.risk.defaults = read_limits(risk ? risk["defaults"] : YAML::Node());
+  if (risk && risk["instruments"] && risk["instruments"].IsMap()) {
+    for (const auto& entry : risk["instruments"]) {
+      config.risk.instruments[entry.first.as<std::string>()] = read_limits(entry.second);
+    }
+  }
+  config.risk.max_orders_per_strategy_per_second =
+      get_or(risk, "max_orders_per_strategy_per_second", 0);
+  config.risk.reference_price_max_age_seconds =
+      get_or(risk, "reference_price_max_age_seconds", 60.0);
+  config.risk.reference_refresh_seconds = get_or(risk, "reference_refresh_seconds", 5);
+  config.risk.kill_switch_file = get_or<std::string>(risk, "kill_switch_file", "");
+  config.risk.cancel_all_on_kill = get_or(risk, "cancel_all_on_kill", true);
 
   return config;
 }

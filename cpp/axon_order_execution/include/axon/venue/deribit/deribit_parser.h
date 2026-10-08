@@ -263,9 +263,16 @@ class DeribitParser {
     out.exchange_ts_ns =
         core::Timestamp::from_millis(last_update.value_or(*creation)).ns();
 
-    // internal_order_id and strategy_id are ours, not Deribit's -- the OMS
-    // restores them from the existing order, as _handle_order_update does.
+    // The client order id we sent -- our internal_order_id, or the
+    // strategy's label, which the OMS maps back -- ties this update to its
+    // request. Read last rather than in document order: one extra scan of a
+    // small object, against a lookup that must not be missed. An id too long
+    // for the field (one we did not send) is left empty.
     out.internal_order_id.clear();
+    if (const auto cid = d["label"].as_string(); cid.has_value()) {
+      static_cast<void>(out.internal_order_id.assign(*cid));
+    }
+    // strategy_id is ours alone; the OMS restores it.
     out.strategy_id.clear();
     std::memset(out.reserved, 0, sizeof(out.reserved));
     return true;

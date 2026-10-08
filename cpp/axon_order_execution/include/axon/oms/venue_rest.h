@@ -50,11 +50,18 @@ class VenueRest {
       std::function<void(std::vector<models::Position>, const std::string& error)>;
   using StringCallback =
       std::function<void(std::string value, const std::string& error)>;
+  using OrderCallback =
+      std::function<void(std::optional<models::Order>, const std::string& error)>;
 
   virtual ~VenueRest() = default;
 
   virtual void get_ticker(const std::string& instrument, TickerCallback cb) = 0;
   virtual void get_open_orders(const std::string& currency, OrdersCallback cb) = 0;
+  // One order's current state by venue order id, open or closed. `order`
+  // supplies what a venue needs beside the id -- the symbol, on three of the
+  // four. This is how the order reconciler learns the FINAL state of an order
+  // that left the open-orders snapshot while the feed was not looking.
+  virtual void get_order(const models::Order& order, OrderCallback cb) = 0;
   virtual void get_positions(const std::string& currency, PositionsCallback cb) = 0;
   virtual void get_user_trades(const std::string& currency, std::int64_t start_ms,
                                std::int64_t end_ms, FillsCallback cb) = 0;

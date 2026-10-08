@@ -21,6 +21,7 @@ add_executable(axon_tests
   test_perp_venues.cpp
   test_ws_order_entry.cpp
   test_ws_connection.cpp
+  test_client_order_id.cpp
 )
 
 target_include_directories(axon_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -49,10 +50,14 @@ gtest_discover_tests(axon_tests
 add_executable(axon_app_tests
   test_ems_dispatch.cpp
   test_rest_json.cpp
+  test_strategy_client.cpp
+  test_order_safety.cpp
+  test_risk_manager.cpp
 )
 target_include_directories(axon_app_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(axon_app_tests PRIVATE
   axon::app
+  cppzmq
   GTest::gtest
   GTest::gtest_main
 )

@@ -255,7 +255,15 @@ class BybitParser {
     const std::int64_t ms = updated.value_or(created.value_or(0));
     out.exchange_ts_ns = ms != 0 ? core::Timestamp::from_millis(ms).ns() : 0;
 
+    // The client order id we sent -- our internal_order_id, or the
+    // strategy's label, which the OMS maps back -- ties this update to its
+    // request. Read last rather than in document order: one extra scan of a
+    // small object, against a lookup that must not be missed. An id too long
+    // for the field (one we did not send) is left empty.
     out.internal_order_id.clear();
+    if (const auto cid = d["orderLinkId"].as_string(); cid.has_value()) {
+      static_cast<void>(out.internal_order_id.assign(*cid));
+    }
     out.strategy_id.clear();
     std::memset(out.reserved, 0, sizeof(out.reserved));
     return true;

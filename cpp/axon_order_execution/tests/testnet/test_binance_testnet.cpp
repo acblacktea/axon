@@ -34,6 +34,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -268,6 +269,15 @@ class Harness {
                                        std::string("no reply")));
   }
 
+  std::pair<std::optional<Order>, std::string> get_order(const Order& order) {
+    std::optional<std::pair<std::optional<Order>, std::string>> out;
+    rest_->get_order(order, [&](std::optional<Order> o, const std::string& e) {
+      out = std::make_pair(std::move(o), e);
+    });
+    pump([&] { return out.has_value(); });
+    return out.value_or(std::make_pair(std::optional<Order>{}, std::string("no reply")));
+  }
+
   std::optional<axon::models::Ticker> ticker() {
     std::optional<axon::models::Ticker> out;
     bool done = false;
@@ -331,6 +341,19 @@ class Harness {
   std::map<std::string, Order> known_;
   int account_updates_ = 0;
 };
+
+// Binance's REST reads trail its WebSocket by a moment: an order the feed has
+// just reported cancelled can still be listed open, and one just placed can be
+// "unknown" to a lookup. Retries a REST check a bounded number of times,
+// spaced out -- signed reads carry request weight, and a tight loop of them is
+// how an IP gets banned.
+bool eventually(Harness* h, const std::function<bool()>& check, int attempts = 5) {
+  for (int i = 0; i < attempts; ++i) {
+    if (i > 0) h->pump_for(500ms);
+    if (check()) return true;
+  }
+  return false;
+}
 
 // One connected harness for the whole suite: connecting is the slow part, and
 // it is also what the first test asserts on.
@@ -430,12 +453,13 @@ TEST_F(BinanceTestnet, PlacedOrderIsAcceptedAndReportedOnTheFeed) {
   EXPECT_EQ(o.amount.raw(), req.amount.raw());
   EXPECT_EQ(o.filled_amount.raw(), 0);
 
-  // The reconciliation snapshot sees it too.
-  auto [orders, err] = h_->open_orders();
-  ASSERT_EQ(err, "");
-  bool found = false;
-  for (auto& x : orders) found |= x.order_id == id;
-  EXPECT_TRUE(found) << "openOrders does not list " << id;
+  // The reconciliation snapshot sees it too, once REST catches up.
+  EXPECT_TRUE(eventually(h_, [&] {
+    auto [orders, err] = h_->open_orders();
+    for (auto& x : orders)
+      if (x.order_id == id) return true;
+    return false;
+  })) << "openOrders does not list " << id;
 
   EXPECT_TRUE(h_->cancel(id).first);
   EXPECT_TRUE(h_->await_status(id, OrderStatus::kCancelled));
@@ -450,9 +474,13 @@ TEST_F(BinanceTestnet, CancelIsAcceptedAndReportedOnTheFeed) {
   EXPECT_TRUE(ok) << err;
   ASSERT_TRUE(h_->await_status(id, OrderStatus::kCancelled));
 
-  auto [orders, oerr] = h_->open_orders();
-  ASSERT_EQ(oerr, "");
-  for (auto& x : orders) EXPECT_NE(x.order_id, id) << "cancelled order still open";
+  EXPECT_TRUE(eventually(h_, [&] {
+    auto [orders, oerr] = h_->open_orders();
+    if (!oerr.empty()) return false;
+    for (auto& x : orders)
+      if (x.order_id == id) return false;
+    return true;
+  })) << "cancelled order still listed open";
 }
 
 // order.modify needs price AND quantity; the EMS fills the omitted one from
@@ -629,24 +657,97 @@ TEST_F(BinanceTestnet, MarketOrderFillIsReportedAndReconcilable) {
 }
 
 // ===========================================================================
-// Known gaps found on testnet
+// Client order ids, idempotency and single-order lookup
 // ===========================================================================
 
-// GAP: a successful place reports success but no order. interpret_reply
-// ignores the ws-fapi result, and the feed parser drops the client order id,
-// so a strategy cannot tie its request to the order that comes back. The
-// order id IS in the reply this test reads directly.
-TEST_F(BinanceTestnet, DISABLED_PlaceResultCarriesTheOrderId) {
+// The acceptance carries the venue's order, so a strategy can tie what it
+// placed to what it later sees.
+TEST_F(BinanceTestnet, PlaceResultCarriesTheOrderId) {
   const auto label = fresh_label("g");
   const auto r = h_->place(h_->resting_buy(label));
   ASSERT_TRUE(r.success) << r.error;
   const auto id = h_->order_id_for(label);
+  ASSERT_TRUE(r.order.has_value()) << "OrderResult carries no order";
+  EXPECT_EQ(r.order->order_id, id.value_or(""));
+  EXPECT_EQ(r.order->instrument, kSymbol);
+  EXPECT_EQ(r.order->status, OrderStatus::kOpen);
   if (id) {
     h_->cancel(*id);
     h_->await_status(*id, OrderStatus::kCancelled);
   }
-  ASSERT_TRUE(r.order.has_value()) << "OrderResult carries no order";
-  EXPECT_EQ(r.order->order_id, id.value_or(""));
+}
+
+// With no label, the venue is given our internal_order_id and echoes it on
+// every update -- the handle that resolves an order whose reply was lost.
+TEST_F(BinanceTestnet, FeedUpdatesCarryTheInternalOrderId) {
+  auto req = h_->resting_buy("");
+  req.label.reset();
+  const auto r = h_->place(req);
+  ASSERT_TRUE(r.success) << r.error;
+  const auto id = h_->order_id_for(req.internal_order_id);
+  ASSERT_TRUE(id.has_value()) << "the venue did not echo the internal_order_id";
+  ASSERT_TRUE(h_->await_status(*id, OrderStatus::kOpen));
+  EXPECT_EQ(h_->latest(*id)->internal_order_id.value_or(""), req.internal_order_id);
+
+  h_->cancel(*id);
+  ASSERT_TRUE(h_->await_status(*id, OrderStatus::kCancelled));
+  EXPECT_EQ(h_->latest(*id)->internal_order_id.value_or(""), req.internal_order_id);
+}
+
+// The lookup the order reconciler uses for orders that left the open-orders
+// snapshot unseen: it must report the state, open or final.
+TEST_F(BinanceTestnet, SingleOrderLookupReportsOpenAndFinalState) {
+  const auto label = fresh_label("l");
+  const auto id = place_resting(label);
+  ASSERT_FALSE(id.empty());
+  ASSERT_TRUE(h_->await_status(id, OrderStatus::kOpen));
+  const auto local = *h_->latest(id);
+
+  std::optional<Order> open;
+  std::string err;
+  eventually(h_, [&] {
+    std::tie(open, err) = h_->get_order(local);
+    return open.has_value();
+  });
+  ASSERT_TRUE(open.has_value()) << err;
+  EXPECT_EQ(open->order_id, id);
+  EXPECT_EQ(open->status, OrderStatus::kOpen);
+  EXPECT_EQ(open->internal_order_id.value_or(""), label);
+
+  ASSERT_TRUE(h_->cancel(id).first);
+  ASSERT_TRUE(h_->await_status(id, OrderStatus::kCancelled));
+  std::optional<Order> done;
+  std::string err2;
+  eventually(h_, [&] {
+    std::tie(done, err2) = h_->get_order(local);
+    return done.has_value() && done->status == OrderStatus::kCancelled;
+  });
+  ASSERT_TRUE(done.has_value()) << err2;
+  EXPECT_EQ(done->status, OrderStatus::kCancelled);
+}
+
+// The retry a strategy reaches for after a timeout must not become a second
+// order. The EMS refuses it before it is sent.
+TEST_F(BinanceTestnet, ResubmittingTheSameRequestIsRefused) {
+  const auto label = fresh_label("d");
+  const auto req = h_->resting_buy(label);
+  const auto first = h_->place(req);
+  ASSERT_TRUE(first.success) << first.error;
+  const auto id = h_->order_id_for(label);
+  ASSERT_TRUE(id.has_value());
+
+  const auto again = h_->place(req);
+  EXPECT_FALSE(again.success);
+  EXPECT_NE(again.error.find("duplicate internal_order_id"), std::string::npos) << again.error;
+
+  auto [orders, err] = h_->open_orders();
+  ASSERT_EQ(err, "");
+  int with_label = 0;
+  for (auto& o : orders) with_label += o.internal_order_id.value_or("") == label;
+  EXPECT_EQ(with_label, 1) << "the venue holds more than one order for one request";
+
+  h_->cancel(*id);
+  h_->await_status(*id, OrderStatus::kCancelled);
 }
 
 }  // namespace
