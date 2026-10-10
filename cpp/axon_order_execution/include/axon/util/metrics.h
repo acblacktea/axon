@@ -13,8 +13,7 @@
 // observation, which is fine at the rates these are called (per order, per
 // reconnect) and far too slow per market-data message. Nothing here may be
 // called from inside the receive loop. When per-message counters are needed
-// they go in a per-thread POD struct that a background thread folds in --
-// see the note in README.
+// they go in a per-thread POD struct that a background thread folds in.
 //
 // When metrics are disabled every call is a cheap no-op, so production code
 // never guards with `if (metrics_enabled)`.

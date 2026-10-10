@@ -479,7 +479,7 @@ constexpr std::size_t Decimal<Scale>::write(char* out, std::size_t cap) const no
 // and the compiler will NOT catch passing one where the other is expected.
 // Making them distinct needs a phantom tag parameter plus a cross-tag multiply
 // (price x qty -> notional); worth doing once the order path exists and we know
-// which combinations are actually meaningful. Tracked in README "Follow-ups".
+// which combinations are actually meaningful.
 // ---------------------------------------------------------------------------
 inline constexpr std::int64_t kDefaultScale = 1'000'000'000LL;  // 9 decimals
 

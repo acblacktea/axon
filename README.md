@@ -1,82 +1,110 @@
 # Axon
 
-> The Python implementations under `python_deprecated/` are deprecated and no
-> longer maintained; the C++ services under `cpp/` are the ones in use. The
-> Python order-execution code is kept only so `python_wire_compat` can keep
-> checking that the C++ engine stays wire-compatible with Python strategy clients.
+Crypto quant trading infrastructure in C++: a market data service (MDS), an
+order execution engine (EMS + OMS) and a pre-trade risk layer. Strategies run
+as separate processes and connect to both over ZMQ, or over shared memory when
+they share a host with the engine.
 
-Crypto trading infrastructure. Two services, each implemented twice — a
-production Python implementation and a low-latency C++ port.
-
-| Service | Python | C++ |
+| Service | Code | Binaries |
 |---|---|---|
-| **Order execution** (EMS + OMS) | [python_deprecated/axon_order_execution/](python_deprecated/axon_order_execution/) | [cpp/axon_order_execution/](cpp/axon_order_execution/) |
-| **Market data** (MDS) | [python_deprecated/axon_market_data/](python_deprecated/axon_market_data/) | [cpp/axon_market_data/](cpp/axon_market_data/) |
+| **Order execution** (EMS + OMS + risk) | [cpp/axon_order_execution/](cpp/axon_order_execution/) | `axon_engine`, `axon_strategy` |
+| **Market data** (MDS) | [cpp/axon_market_data/](cpp/axon_market_data/) | `axon_market_data`, `mds_subscriber` |
+
+> The Python implementations under [python_deprecated/](python_deprecated/)
+> are deprecated and no longer maintained. The Python order-execution code is
+> kept only so the `python_wire_compat` test can keep checking that the C++
+> engine stays wire-compatible with Python strategy clients.
 
 ---
 
 ## Architecture
 
-### Order execution — EMS + OMS
-
-A standalone engine process owns every exchange connection and all order
-state. Strategies run as separate processes and talk to it over ZMQ.
-
 ```
-  Strategy A (Py)      Strategy B (Py)      Strategy C (C++, same host)
-  StrategyClient       StrategyClient       StrategyClient
-   DEALER + SUB         DEALER + SUB         shared-memory ring (optional)
-         \                   /                        |
-          -- ZMQ ROUTER :5555 --                      |  ~0.1-0.3 us one-way
-          -- ZMQ PUB    :5556 --                      |
-                  |  ~30-60 us round trip             |
-          +-------+-----------------------------------+--------+
-          |                   Execution engine                  |
-          |          AxonExecutionService / axon_engine         |
-          |                                                     |
-          |  EMS  -- REST: place / cancel / modify / quotes      |
-          |  OMS  -- WebSocket: order, fill and position push,   |
-          |          local state, periodic reconciliation        |
-          |  Repository -- Postgres or in-memory                 |
-          |  Metrics    -- Prometheus :9100/metrics              |
-          +--------------------------+--------------------------+
-                                     |
-              Deribit (options) / Binance / Bybit / OKX (USDT perps)
+  Binance / OKX / Bybit / Hyperliquid                 Strategy processes
+              |                                 StrategyClient (C++ or Python)
+     WebSocket (+ REST snapshots)                  |                  |
+              |                              ZMQ ROUTER :5555    shared-memory
+     +--------+---------+                    ZMQ PUB    :5556    SPSC rings
+     |   Market data    |  ZMQ PUB :5558           |                  |
+     |  order books,    | ------------------> +----+------------------+----+
+     |  normalization   |   (to strategies)   |       axon_engine          |
+     +------------------+                     |                            |
+                                              |  risk  -- pre-trade checks |
+                                              |  EMS   -- place / cancel / |
+                                              |           modify           |
+                                              |  OMS   -- orders, fills,   |
+                                              |           positions,       |
+                                              |           reconciliation   |
+                                              +-------------+--------------+
+                                                            |
+                                         Binance / Bybit / OKX (USDT perps)
+                                                Deribit (options)
 ```
 
-- **EMS** performs actions over REST. **OMS** tracks truth over WebSocket and
-  reconciles periodically, because sockets drop and messages get lost.
-- Fills are de-duplicated. Counting one twice means a wrong position.
-- The C++ engine adds a **second plane**: a shared-memory SPSC ring carrying
-  only `place / cancel / modify / order_update / fill` as fixed-size POD
-  structs. It is fire-and-forget — no ack, results arrive as later order
-  updates. Everything else stays on the JSON control plane.
-- Both implementations speak a **byte-identical JSON protocol**, enforced by
-  the `python_wire_compat` test, so Python strategies run unchanged against
-  the C++ engine.
+### Order execution — `axon_engine`
 
-### Market data — MDS
+One single-threaded, busy-polling process owns every exchange connection and
+all order state. It is built from three independent modules:
 
-Connects to exchange WebSockets, maintains local order books, and republishes
-everything as normalized ZMQ PUB messages.
+- **EMS** (`ems/`) sends orders. Each venue gets a function table
+  (`VenueOps`) that builds requests and interprets replies. Every order goes out
+  with a client order id (the strategy's label, or the engine's
+  `internal_order_id`). The venue echoes that id back, which is how a placement
+  whose reply was lost still gets resolved. A send with no verdict is reported
+  as `OUTCOME_UNKNOWN`, never as a failure. A strategy's natural reaction to a
+  failure is to retry, and if the first order actually went through, that retry
+  doubles the position. A duplicate guard on `internal_order_id` refuses
+  resubmissions.
+- **OMS** (`oms/`) is the source of truth. It keeps the order, fill and
+  portfolio stores up to date from the venues' WebSocket feeds, de-duplicates
+  fills, persists to Postgres when configured, and reconciles periodically
+  against REST snapshots. Reconciliation catches open orders, missed fills and
+  positions, and looks up orders that were sent but never heard from.
+  `OmsService` publishes changes to `OmsListener`s and has no transport of its
+  own. `VenueConnections` owns the TLS, HTTP, REST and WebSocket sessions, and
+  routes feed events to the OMS and RPC replies to the EMS.
+- **Risk** (`risk/`) depends only on config and models. `RiskManager` checks
+  every order before it reaches the EMS, in this order: kill switch → order
+  rate → quantity / notional → price deviation from the reference price →
+  worst-case position. If there is no reference price, the order is refused.
+  `RiskFeed` gives it fills and positions from the OMS. The kill switch is
+  tripped by `SIGUSR1` (`SIGUSR2` releases it) or by creating the configured
+  kill file (deleting it releases). When `cancel_all_on_kill` is set, tripping
+  it also cancels active orders.
 
-```
-  Binance / OKX / Bybit / Hyperliquid / Deribit / Kraken / Coinbase / Upbit
-                                 |
-                      WebSocket (+ REST snapshots)
-                                 |
-                    +------------+------------+
-                    |       Market data       |
-                    |  local order books,     |
-                    |  symbol normalization   |
-                    +------------+------------+
-                                 |
-                          ZMQ PUB :5558
-                                 |
-                      subscribers (Py / C++)
-```
+Everything specific to one exchange lives in
+`include/axon/exchanges/<venue>/` and `src/exchanges/<venue>/`. Supported
+venues are `binance`, `bybit`, `okx` and `deribit`. Each venue has:
 
-Messages are two frames, `[topic, json]`, with the topic shaped as
+| File | Role |
+|---|---|
+| `<venue>_builder` / `<venue>_parser` | Wire protocol: request building, simdjson parsing of feed frames |
+| `<venue>_ems` | The venue's `VenueOps` for the EMS |
+| `<venue>_oms` | The venue's `OmsVenue`: feed session, order-entry session, REST client |
+
+To add a venue, add one directory and register it with the EMS and OMS. See
+[GUIDE.md](cpp/axon_order_execution/GUIDE.md).
+
+Strategies have two planes:
+
+- **Control plane**: JSON over ZMQ (ROUTER `:5555` for requests, PUB `:5556`
+  for order and fill updates). It is byte-identical to the Python engine's
+  protocol.
+- **Hot path**: shared-memory SPSC rings carrying only
+  `place / cancel / modify / order_update / fill` as fixed-size POD structs.
+  It is fire-and-forget: there is no ack, and results arrive as later order
+  updates.
+
+The engine uses its own networking (`net/`): an RFC 6455 WebSocket client
+over OpenSSL memory BIOs, polled from the main loop. Prices and quantities are
+fixed-point decimals.
+
+### Market data — `axon_market_data`
+
+The MDS connects to exchange WebSockets for Binance, OKX, Bybit and
+Hyperliquid. It maintains local order books and republishes depth, ticker and
+kline data as normalized ZMQ PUB messages on `:5558`. Each message is two
+frames, `[topic, json]`, and the topic has the form
 `{exchange}.{data_type}.{symbol}`:
 
 ```
@@ -86,123 +114,64 @@ okx.ticker.ETH_USDT_SPOT
 bybit_inverse.depth.BTC_USD_PERP
 ```
 
-The C++ service covers Binance, OKX, Bybit and Hyperliquid (depth, ticker,
-kline). The Python service additionally covers Deribit, Kraken, Coinbase and
-Upbit.
-
 ### Ports
 
-Both services may run on one host, so their ZMQ ports must not overlap.
-Register new services here.
+Both services may run on one host, so their ports must not overlap. Register
+new services here.
 
 | Port | Service | Purpose |
 |---|---|---|
-| 5555 | Order execution | ZMQ ROUTER — place / cancel control plane |
-| 5556 | Order execution | ZMQ PUB — order and fill updates |
-| 5557 | Market data | ZMQ PUB — Deribit options feed |
-| 5558 | Market data | ZMQ PUB — general multi-exchange feed |
+| 5555 | Order execution | ZMQ ROUTER: strategy requests |
+| 5556 | Order execution | ZMQ PUB: order and fill updates |
+| 5558 | Market data | ZMQ PUB: multi-exchange feed |
+| 9100 | Order execution | Prometheus `/metrics` |
+| 9101 | Market data | Prometheus `/metrics` |
 
 ---
 
-## Usage
+## Build
 
-The order execution service reads `config.yaml` at the repository root; the
-market data service takes its own `config.yml`.
-
-### Order execution — Python
-
-```bash
-cd python_deprecated/axon_order_execution
-
-# terminal 1: the engine
-python -m axon_order_execution.engine --config ../../config.yaml
-
-# terminal 2: a strategy
-python examples/strategy_one.py
-```
-
-```python
-import asyncio
-from axon_order_execution.client import StrategyClient
-from axon_order_execution.config import ZMQConfig
-from axon_order_execution.models import OrderRequest, OrderSide, OrderType
-
-async def main():
-    client = StrategyClient(ZMQConfig(), strategy_id="my_strategy")
-    await client.connect()
-
-    client.register_order_update_callback(lambda o: print(o.order_id, o.status.value))
-    client.register_fill_update_callback(lambda f: print(f.trade_id, f.amount, f.price))
-
-    order = await client.place_order("deribit", OrderRequest(
-        instrument="BTC-30JAN26-100000-C",
-        side=OrderSide.BUY,
-        amount=0.1,
-        order_type=OrderType.LIMIT,
-        price=500.0,
-    ))
-    await client.disconnect()
-
-asyncio.run(main())
-```
-
-To run the engine in-process instead (development and tests), the interface is
-the same as `StrategyClient`:
-
-```python
-from axon_order_execution import AxonExecutionService, load_config
-
-service = AxonExecutionService(load_config("config.yaml"))
-await service.start()
-order = await service.place_order("deribit", request)
-```
-
-### Order execution — C++
-
-Needs CMake >= 3.24, a C++20 compiler, OpenSSL, and yaml-cpp / spdlog /
-prometheus-cpp / cppzmq / libpqxx. On macOS CMake finds these under the brew
-prefix. The first configure needs network access to fetch GoogleTest.
+Both services build with GCC on Linux. [cpp/BUILD.md](cpp/BUILD.md) covers the
+dependencies to install, and section 4 covers optimization flags
+(`-march=native`, LTO, PGO).
 
 ```bash
+# order execution: C++20, CMake >= 3.24
 cd cpp/axon_order_execution
-cmake --preset default && cmake --build build
-ctest --test-dir build
+CC=gcc CXX=g++ cmake --preset default
+cmake --build build -j$(nproc)
+ctest --test-dir build -j$(nproc)
 
-./build/bin/axon_engine --config ../../config.yaml
-```
-
-### Market data — Python
-
-```bash
-cd python_deprecated/axon_market_data
-pip install -r requirements.txt
-python examples/run_server.py          # reads examples/config.yml
-```
-
-### Market data — C++
-
-Needs a C++23 compiler, CMake 3.25+, Ninja and vcpkg. The first build is slow
-because vcpkg compiles every dependency.
-
-```bash
+# market data: C++23, CMake >= 3.25, Ninja
 cd cpp/axon_market_data
-cmake -B build -G Ninja -DCMAKE_TOOLCHAIN_FILE=~/vcpkg/scripts/buildsystems/vcpkg.cmake
-cmake --build build
-
-./build/axon_market_data config.yml
+CC=gcc CXX=g++ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+ctest --test-dir build -j$(nproc)
 ```
 
-Subscribing:
+`ctest` runs the offline suites. The order-execution engine also has a
+Binance testnet suite, `axon_testnet_tests`. It is not registered with
+`ctest`: it places real testnet orders and runs only with `AXON_TESTNET=1` and
+credentials in the environment.
+
+## Run
+
+[test/](test/) is an end-to-end workspace that runs both services together
+against Binance testnet, with risk limits and a kill file. Its
+[README](test/README.md) covers copying binaries into `test/bin/`, starting
+the services and checking that they are connected:
 
 ```bash
-./build/mds_subscriber                                            # every topic
-./build/mds_subscriber tcp://localhost:5558 binance_spot.depth    # depth only
-python example/subscriber.py tcp://localhost:5558 binance_spot.depth.ETH_USDT_SPOT
+cd test
+./bin/axon_market_data mds_config.yml
+
+source ~/.config/axon/binance-testnet.env   # API keys come only from the environment
+./bin/axon_engine --config engine_config.yml
+
+./bin/mds_subscriber tcp://localhost:5558 binance_usdt_futures.depth
 ```
 
 ---
 
-Per-service detail — exchange quirks, configuration reference, benchmarks and
-design rationale — lives in each service's own README:
-[order execution (C++)](cpp/axon_order_execution/README.md) ·
-[market data (C++)](cpp/axon_market_data/README.md).
+How the order execution engine is put together, and how to add a venue:
+[cpp/axon_order_execution/GUIDE.md](cpp/axon_order_execution/GUIDE.md).
