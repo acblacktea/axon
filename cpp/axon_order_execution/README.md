@@ -128,7 +128,10 @@ cppzmq / libpqxx（macOS 上 CMakeLists 会自动去 brew 的前缀里找）。
   而那个字段的存在就是为了让不匹配在启动时**大声失败**，而不是错误地解析下去。
 - **加字段是破坏性变更。** 这正是控制面还存在的理由。
 
-### `venue/` — 各交易所协议，四家齐全
+### `exchanges/<交易所>/` — 各交易所协议，四家齐全
+
+每家交易所的代码都在自己的目录里：协议（`*_builder`、`*_parser`）、下单（`*_ems`）、
+订单管理（`*_oms`）。四家共用的 JSON 工具留在 `venue/`。下面说的是协议部分。
 
 入站解析和出站构造。纯字节变换，不碰 socket，所以能拿抓下来的报文穷举测试。
 
@@ -327,12 +330,15 @@ config、logging、metrics、订单状态、venue 会话、对账、持久化、
 
 | 组件 | 说明 |
 |---|---|
+| `oms/oms_service.h` | `OmsService`：订单、成交、持仓三个 store，持久化，每家一个对账器，回报和成交的处理流程（先推共享内存、再写 store；成交按订单归属策略并去重）。通过 `OmsListener` 接口对外推送，不直接碰 ZMQ 和共享内存。 |
+| `oms/venue_connections.h` | 所有到交易所的连接：TLS、HTTP、每家的 REST、行情回报连接和下单连接。回报转给 OMS，下单回执转给 EMS。 |
+| `risk/risk_manager.h` | 下单前风控：熔断开关、频率、单笔数量与名义价值、价格偏离、最坏情况持仓。由 EMS 在下单前调用，通过 `risk/risk_feed.h` 从 OMS 获取订单、成交和持仓。 |
 | `oms/venue_session.h` | 每个交易所一个会话状态机：连接 → 鉴权 → 订阅 → 运行，失败进 backoff。**指数退避 + 抖动**，上限是 `max_reconnect_delay_seconds`。静默超时也会触发重连。 |
 | `oms/order_store.h` | 内存订单缓存，通过 repository 写穿到持久层。读永远来自内存，绝不在这个线程上做阻塞 SELECT。 |
 | `oms/portfolio_store.h` | 账户与持仓。 |
 | `oms/reconciler.h` | 定期用 REST 和交易所对账，补回 WS 丢掉的订单和成交。它会被告知已经正常收到的 `trade_id`，避免把正常到达的成交"恢复"一遍造成重复计数。 |
 | `oms/venue_rest.h` | 对账用的 REST 拉取。 |
-| `ems/ems_service.h` | 下单/撤单/改单，路由到各交易所。撤单和改单需要订单的 symbol，所以它持有一个到 `OrderStore` 的查询回调。 |
+| `ems/ems_service.h` | 下单/撤单/改单，按 `exchanges/<交易所>/*_ems` 提供的函数表路由到各交易所。超时报"结果未知"，拒绝重复的 `internal_order_id`。撤单和改单需要订单的 symbol，所以它持有一个到 OMS 的查询回调。 |
 | `repository/postgres.h` | `PostgresWriter` —— **一个专用写线程挂在 SpscRing 后面**，完全在热路径之外。libpqxx 没有像样的异步方案，而持久化本来就不是延迟敏感的。 |
 | `transport/zmq_server.h` | ROUTER 收命令 + PUB 广播事件，和 Python 的 `transport/server.py` 线上兼容。 |
 | `transport/shm_bridge.h` | 共享内存快路径，见下。 |

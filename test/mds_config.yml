@@ -1,0 +1,49 @@
+# Market data service -- example for end-to-end testing.
+#
+#   ./bin/axon_market_data mds_config.yml
+#
+# Publishes on ZMQ PUB as two frames, [topic, json], topic
+# "{exchange}.{data_type}.{symbol}", e.g. binance_usdt_futures.ticker.BTC_USDT_PERP.
+#
+# NOTE: market data is always from the PRODUCTION venues -- the service has no
+# testnet endpoints. The engine below trades on Binance TESTNET, whose prices
+# can differ from production. A strategy that prices orders off this feed must
+# expect that gap (testnet's PERCENT_PRICE band is +-5%, and the engine's own
+# price-deviation limit is checked against TESTNET prices).
+
+zmq:
+  pub_address: "tcp://127.0.0.1:5558"   # strategies connect here
+
+logging:
+  file: "logs/mds.log"                  # rotated daily -> logs/mds_YYYY-MM-DD.log
+  level: info
+  max_files: 7
+
+# Log any subscribed topic that never delivered data, this long after start.
+silent_topic_check_seconds: 30
+
+metrics:
+  enabled: true
+  host: "127.0.0.1"
+  port: 9101                            # the engine uses 9100
+
+exchanges:
+  # The market the engine trades below: Binance USDT-M perpetuals.
+  - name: binance
+    market_type: usdt_futures
+    update_speed: "100ms"
+    depth_levels: 20                    # REST snapshot limit is rounded up to 50
+    subscriptions:
+      depth:  [BTC_USDT_PERP, ETH_USDT_PERP]
+      ticker: [BTC_USDT_PERP, ETH_USDT_PERP]
+      kline:  [BTC_USDT_PERP]
+
+  # Uncomment to add more venues; each publishes under its own topic prefix.
+  # - name: okx
+  #   subscriptions:
+  #     depth:  [BTC_USDT_PERP]
+  #     ticker: [BTC_USDT_PERP]
+  # - name: bybit
+  #   market_type: usdt_futures
+  #   subscriptions:
+  #     ticker: [BTC_USDT_PERP]

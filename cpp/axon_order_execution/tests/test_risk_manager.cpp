@@ -13,7 +13,7 @@
 #include "axon/config.h"
 #include "axon/ems/ems_service.h"
 #include "axon/models/order.h"
-#include "axon/oms/risk_manager.h"
+#include "axon/risk/risk_manager.h"
 #include "axon/oms/venue_session.h"
 
 namespace {
@@ -27,7 +27,7 @@ using axon::models::OrderRequest;
 using axon::models::OrderSide;
 using axon::models::OrderStatus;
 using axon::models::OrderType;
-using axon::oms::RiskManager;
+using axon::risk::RiskManager;
 
 Qty Q(const char* s) { return *Qty::from_string(s); }
 Price P(const char* s) { return *Price::from_string(s); }
@@ -54,7 +54,7 @@ RiskConfig with_defaults(RiskLimits defaults) {
   return c;
 }
 
-std::string code(const std::optional<axon::oms::RiskRejection>& r) {
+std::string code(const std::optional<axon::risk::RiskRejection>& r) {
   return r ? r->code : "allowed";
 }
 
@@ -335,6 +335,115 @@ TEST(RiskKillSwitch, WorksEvenWithLimitsDisabled) {
   EXPECT_EQ(code(risk.check_new_order("binance", order(OrderSide::kBuy, "5"), kNow)), "allowed");
   risk.engage_kill_switch("test");
   EXPECT_EQ(code(risk.check_new_order("binance", order(OrderSide::kBuy, "5"), kNow)), "kill_switch");
+}
+
+// ===========================================================================
+// Kill switch sources: who may release what
+// ===========================================================================
+
+using axon::risk::KillSource;
+
+TEST(RiskKillSource, TheFileEngagesWhilePresentAndReleasesWhenRemoved) {
+  RiskManager risk;
+  risk.observe_kill_file(true, "axon.kill");
+  EXPECT_TRUE(risk.kill_switch_engaged());
+  EXPECT_EQ(risk.kill_switch_source(), KillSource::kFile);
+  EXPECT_NE(risk.kill_switch_reason().find("axon.kill"), std::string::npos);
+  risk.observe_kill_file(true, "axon.kill");  // still there: no change
+  EXPECT_TRUE(risk.kill_switch_engaged());
+  risk.observe_kill_file(false, "axon.kill");
+  EXPECT_FALSE(risk.kill_switch_engaged());
+}
+
+// Deleting a stale kill file must not undo a stop ordered another way.
+TEST(RiskKillSource, RemovingTheFileDoesNotReleaseASignalStop) {
+  RiskManager risk;
+  risk.engage_kill_switch(KillSource::kSignal, "SIGUSR1");
+  risk.observe_kill_file(false, "axon.kill");
+  EXPECT_TRUE(risk.kill_switch_engaged());
+  // Nor does a file that appears and goes again take the stop over.
+  risk.observe_kill_file(true, "axon.kill");
+  risk.observe_kill_file(false, "axon.kill");
+  EXPECT_TRUE(risk.kill_switch_engaged());
+  EXPECT_EQ(risk.kill_switch_source(), KillSource::kSignal);
+}
+
+// An explicit release is a person deciding, so it releases whatever engaged
+// the switch -- but a file still present means stopped, and it re-engages.
+TEST(RiskKillSource, ASignalReleaseIsOverriddenByAFileStillPresent) {
+  RiskManager risk;
+  risk.observe_kill_file(true, "axon.kill");
+  risk.release_kill_switch(KillSource::kSignal);
+  EXPECT_FALSE(risk.kill_switch_engaged());
+  risk.observe_kill_file(true, "axon.kill");
+  EXPECT_TRUE(risk.kill_switch_engaged());
+}
+
+TEST(RiskKillSource, OperatorReleaseClearsAnySource) {
+  RiskManager risk;
+  risk.engage_kill_switch(KillSource::kSignal, "SIGUSR1");
+  risk.release_kill_switch();
+  EXPECT_FALSE(risk.kill_switch_engaged());
+}
+
+// The engine cancels every working order from this callback; it must run once
+// per stop, not once per second while the file sits there.
+TEST(RiskKillSource, TheEngagedCallbackRunsOncePerTransition) {
+  RiskManager risk;
+  int calls = 0;
+  std::string reason;
+  risk.set_on_kill_engaged([&](const std::string& r) {
+    ++calls;
+    reason = r;
+  });
+  for (int i = 0; i < 5; ++i) risk.observe_kill_file(true, "axon.kill");
+  risk.engage_kill_switch(KillSource::kSignal, "SIGUSR1");
+  EXPECT_EQ(calls, 1);
+  EXPECT_NE(reason.find("axon.kill"), std::string::npos);
+
+  risk.observe_kill_file(false, "axon.kill");
+  risk.engage_kill_switch(KillSource::kSignal, "SIGUSR1");
+  EXPECT_EQ(calls, 2);
+  EXPECT_EQ(reason, "SIGUSR1");
+}
+
+// ===========================================================================
+// Reference-price refresh targets and schedule
+// ===========================================================================
+
+TEST(RiskReference, OnlyExchangeQualifiedEntriesAreRefreshTargets) {
+  RiskConfig c;
+  c.instruments["binance:BTCUSDT"] = {};
+  c.instruments["ETHUSDT"] = {};   // no venue to ask
+  c.instruments[":BAD"] = {};
+  c.instruments["okx:"] = {};
+  RiskManager risk(c);
+  ASSERT_EQ(risk.reference_targets().size(), 1u);
+  EXPECT_EQ(risk.reference_targets()[0].exchange, "binance");
+  EXPECT_EQ(risk.reference_targets()[0].instrument, "BTCUSDT");
+}
+
+TEST(RiskReference, RefreshIsDueOncePerInterval) {
+  RiskConfig c;
+  c.instruments["binance:BTCUSDT"] = {};
+  c.reference_refresh_seconds = 5;
+  RiskManager risk(c);
+  EXPECT_TRUE(risk.reference_refresh_due(100.0));   // first call: refresh now
+  EXPECT_FALSE(risk.reference_refresh_due(102.0));
+  EXPECT_FALSE(risk.reference_refresh_due(104.9));
+  EXPECT_TRUE(risk.reference_refresh_due(105.0));
+  EXPECT_FALSE(risk.reference_refresh_due(106.0));
+}
+
+TEST(RiskReference, NeverDueWhenDisabledOrWithoutTargets) {
+  RiskConfig off;
+  off.instruments["binance:BTCUSDT"] = {};
+  off.reference_refresh_seconds = 0;
+  EXPECT_FALSE(RiskManager(off).reference_refresh_due(100.0));
+
+  RiskConfig none;
+  none.reference_refresh_seconds = 5;
+  EXPECT_FALSE(RiskManager(none).reference_refresh_due(100.0));
 }
 
 TEST(RiskConfigTest, InstrumentEntriesOverrideTheDefaultsFieldByField) {

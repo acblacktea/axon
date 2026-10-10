@@ -1,18 +1,41 @@
 // REST response parsing shared by the four VenueRest implementations.
 //
-// Internal to venue_rest.cpp; a header only so the parsing can be tested
-// without a network. Nothing outside oms/ should include it.
+// Internal to the venue REST clients in exchanges/<venue>/; a header so the parsing
+// can be tested without a network. Nothing outside oms/ should include it.
 
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "axon/core/clock.h"
 #include "axon/net/http_client.h"
 #include "axon/venue/json_view.h"
 
 namespace axon::oms::detail {
+
+inline std::int64_t now_ms() { return core::wall_clock_ns() / 1'000'000LL; }
+
+// RFC 3986 unreserved characters pass through; everything else is %XX.
+inline std::string url_encode(std::string_view s) {
+  static constexpr char kHex[] = "0123456789ABCDEF";
+  std::string out;
+  for (char c : s) {
+    const auto u = static_cast<unsigned char>(c);
+    if ((u >= 'A' && u <= 'Z') || (u >= 'a' && u <= 'z') || (u >= '0' && u <= '9') ||
+        c == '-' || c == '.' || c == '_' || c == '~') {
+      out.push_back(c);
+    } else {
+      out.push_back('%');
+      out.push_back(kHex[u >> 4]);
+      out.push_back(kHex[u & 0xF]);
+    }
+  }
+  return out;
+}
 
 inline venue::Document& doc() {
   static thread_local venue::Document d(1u << 20);

@@ -1,6 +1,6 @@
 // What a venue does differently on the order path.
 //
-// The C++ counterpart of ems/base.py plus the four ems/<venue>/ modules: this
+// The C++ counterpart of ems/base.py plus the four exchanges/<venue>/ modules: this
 // header is the interface, and each venue supplies one instance of it from its
 // own translation unit. ems_service.cpp holds no venue knowledge at all.
 //
@@ -23,10 +23,11 @@
 #include "axon/core/decimal.h"
 #include "axon/ems/ems_service.h"
 #include "axon/models/order.h"
-#include "axon/venue/binance/binance_builder.h"
-#include "axon/venue/bybit/bybit_builder.h"
-#include "axon/venue/deribit/deribit_builder.h"
-#include "axon/venue/okx/okx_builder.h"
+#include "axon/exchanges/binance/binance_builder.h"
+#include "axon/exchanges/bybit/bybit_builder.h"
+#include "axon/exchanges/deribit/deribit_builder.h"
+#include "axon/venue/json_view.h"
+#include "axon/exchanges/okx/okx_builder.h"
 
 namespace axon::ems {
 
@@ -48,9 +49,32 @@ static_assert(kMaxRequestBytes >= venue::binance::kMaxRequestBytes);
 // 1, so the FIRST order on a connection could do exactly that.
 inline constexpr std::int64_t kEmsFirstRequestId = 1'000'000;
 
+// The mutable state behind order entry, one per EmsService: each venue's
+// request builder -- whose id counter correlates replies with requests -- and
+// a scratch document for parsing replies.
+//
+// Owned by the EMS rather than kept in function-local statics, so the id
+// counter and the EMS's table of requests awaiting a reply live and die
+// together, and two EMS instances never share a counter. Like the EMS itself
+// it is single-threaded: one EmsService is driven from one thread.
+//
+// Every venue starts its ids at kEmsFirstRequestId. Only Deribit and Bybit
+// strictly need it -- their sessions claim auth/subscribe replies by id on
+// the same connection -- but one rule is easier to keep than four.
+struct VenueState {
+  venue::deribit::DeribitBuilder deribit{kEmsFirstRequestId};
+  venue::okx::OkxBuilder okx{kEmsFirstRequestId};
+  venue::bybit::BybitBuilder bybit{kEmsFirstRequestId};
+  venue::binance::BinanceBuilder binance{kEmsFirstRequestId};
+  // Reply parsing scratch: sized once, reused, never reallocated per reply.
+  venue::Document reply_doc{64 * 1024};
+};
+
 // What a builder needs beyond the request itself. Passed to every venue so the
 // signatures are uniform; a venue ignores what it does not use.
 struct BuildContext {
+  // The builders. Never null when the EMS builds a request.
+  VenueState* state;
   // Credentials. Null unless configured -- only Binance needs them per
   // request, because it signs each one rather than logging the session in.
   const ExchangeConfig* config;
@@ -87,7 +111,8 @@ struct VenueOps {
   // about what that means, which is the whole reason this is per-venue: see
   // okx_ems.cpp.
   OrderResult (*interpret_reply)(std::string_view payload,
-                                 const models::OrderRequest& request);
+                                 const models::OrderRequest& request,
+                                 VenueState& state);
 };
 
 // The venue this exchange name maps to, or nullptr if this build has no

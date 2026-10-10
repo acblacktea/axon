@@ -49,7 +49,7 @@
 #include "axon/config.h"
 #include "axon/models/order.h"
 #include "axon/net/http_client.h"
-#include "axon/oms/risk_manager.h"
+#include "axon/risk/risk_manager.h"
 #include "axon/oms/venue_rest.h"
 #include "axon/oms/venue_session.h"
 
@@ -58,6 +58,7 @@ namespace axon::ems {
 // Everything the four venues do differently on the order path, as one row per
 // venue. Defined in ems_service.cpp; only ever passed around by reference.
 struct VenueOps;
+struct VenueState;
 
 struct OrderResult {
   bool success = false;
@@ -97,7 +98,7 @@ class EmsService {
   // refusal is answered locally and never reaches the venue. Cancels are
   // never checked -- reducing risk must always be possible, kill switch or
   // not. Null runs without a risk layer, which the engine warns about.
-  void set_risk_manager(oms::RiskManager* risk) { risk_ = risk; }
+  void set_risk_manager(risk::RiskManager* risk) { risk_ = risk; }
 
   // Routes a venue reply that the session did not claim. Wired to
   // VenueSessionHandlers::on_rpc_reply.
@@ -162,7 +163,11 @@ class EmsService {
   std::map<std::string, oms::VenueSession*> sessions_;
   std::map<std::string, oms::VenueSession*> trade_sessions_;
   OrderLookup lookup_;
-  oms::RiskManager* risk_ = nullptr;
+  risk::RiskManager* risk_ = nullptr;
+  // Request builders and reply scratch for every venue -- this EMS's own, so
+  // the id counters live and die with `pending_` below. Heap-held because
+  // VenueState is only complete in venue_ops.h.
+  std::unique_ptr<VenueState> venues_;
   // Keyed by "exchange:rpc_id" so two venues cannot collide on an id.
   std::map<std::string, Pending> pending_;
 

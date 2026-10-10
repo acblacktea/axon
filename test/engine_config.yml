@@ -1,0 +1,74 @@
+# Order execution engine (EMS + OMS) -- example for end-to-end testing on the
+# Binance USDT-M TESTNET.
+#
+#   source ~/.config/axon/binance-testnet.env      # AXON_BINANCE_API_KEY / _SECRET
+#   ./bin/axon_engine --config engine_config.yml
+#
+# Credentials come from the environment, never this file:
+# AXON_<EXCHANGE>_API_KEY / _API_SECRET / _PASSPHRASE override anything here.
+
+exchanges:
+  binance:
+    env: testnet                # testnet | production -- leave this on testnet
+
+reconciliation:                 # order state vs the venue's open orders
+  enabled: true
+  interval_seconds: 30
+
+fill_reconciliation:            # fills the feed may have missed
+  enabled: true
+  interval_seconds: 60
+  lookback_seconds: 3600
+  overlap_seconds: 30
+
+websocket:
+  heartbeat_interval_seconds: 10
+  reconnect_delay_seconds: 1
+  max_reconnect_delay_seconds: 60
+  request_timeout_seconds: 10   # also how long an order may go unanswered before
+                                # it is reported OUTCOME_UNKNOWN
+
+portfolio:
+  # Binance's userTrades is SYMBOL-scoped: list symbols here, not assets.
+  currencies: ["BTCUSDT"]
+  position_refresh_interval_seconds: 10
+
+zmq:
+  router_endpoint: "tcp://127.0.0.1:5555"   # strategies send commands here
+  pub_endpoint: "tcp://127.0.0.1:5556"      # order and fill events
+
+# No `database:` section: order and fill history lives in memory only.
+
+metrics:
+  enabled: true
+  host: "127.0.0.1"
+  port: 9100
+
+cpp:
+  engine_core: -1               # pin the loop to a core; -1 = do not pin
+  verify_tls: true
+
+  # Shared-memory fast path for these strategy ids (C++ strategies on this
+  # host). Empty = ZMQ only.
+  shm_strategies: []
+  shm_directory: "/dev/shm"
+
+  # Pre-trade risk. Every place and amend is checked; cancels never are.
+  # Quantities are in the venue's units (BTC for BTCUSDT).
+  risk:
+    enabled: true
+    max_orders_per_strategy_per_second: 10
+    reference_price_max_age_seconds: 60
+    reference_refresh_seconds: 5
+    kill_switch_file: "axon.kill"   # `touch axon.kill` stops trading, `rm` resumes
+    cancel_all_on_kill: true
+    defaults:
+      max_order_notional: 5000      # USDT per order
+      max_price_deviation: 0.05     # limit price within 5% of the reference
+    instruments:
+      "binance:BTCUSDT":
+        max_order_qty: 0.05
+        max_position: 0.1
+      "binance:ETHUSDT":
+        max_order_qty: 1
+        max_position: 2

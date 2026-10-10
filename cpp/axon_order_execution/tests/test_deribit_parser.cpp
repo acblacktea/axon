@@ -6,7 +6,7 @@
 // the two implementations must agree or a strategy will see different state
 // depending on which engine it is talking to.
 
-#include "axon/venue/deribit/deribit_parser.h"
+#include "axon/exchanges/deribit/deribit_parser.h"
 
 #include <gtest/gtest.h>
 

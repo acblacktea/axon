@@ -53,6 +53,7 @@ add_executable(axon_app_tests
   test_strategy_client.cpp
   test_order_safety.cpp
   test_risk_manager.cpp
+  test_oms_service.cpp
 )
 target_include_directories(axon_app_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(axon_app_tests PRIVATE

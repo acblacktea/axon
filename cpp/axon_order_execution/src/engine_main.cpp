@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <map>
@@ -27,15 +28,10 @@
 #include "axon/core/clock.h"
 #include "axon/core/platform.h"
 #include "axon/ems/ems_service.h"
-#include "axon/net/http_client.h"
-#include "axon/net/tls_stream.h"
-#include "axon/oms/order_store.h"
-#include "axon/oms/portfolio_store.h"
-#include "axon/oms/reconciler.h"
-#include "axon/oms/risk_manager.h"
-#include "axon/oms/venue_rest.h"
-#include "axon/repository/postgres.h"
-#include "axon/oms/venue_session.h"
+#include "axon/oms/oms_service.h"
+#include "axon/risk/risk_feed.h"
+#include "axon/risk/risk_manager.h"
+#include "axon/oms/venue_connections.h"
 #include "axon/transport/hot_messages.h"
 #include "axon/transport/shm_bridge.h"
 #include "axon/transport/wire.h"
@@ -60,66 +56,163 @@ bool any_limit(const axon::RiskLimits& l) {
 }
 
 // ---------------------------------------------------------------------------
+// Turns what the OMS publishes into strategy-facing traffic: the shared-memory
+// hot path for co-located strategies, ZMQ events for everyone.
+// ---------------------------------------------------------------------------
+class StrategyPublisher final : public axon::oms::OmsListener {
+ public:
+  StrategyPublisher(axon::transport::ZmqServer& zmq, axon::transport::ShmBridge& shm)
+      : zmq_(zmq), shm_(shm) {}
+
+  // Called before the OMS decodes anything: the ring gets the venue's bytes
+  // ahead of every allocation on the control-plane side.
+  void on_order_message(const axon::transport::OrderUpdateMsg& msg) override {
+    shm_.publish_order(msg, msg.strategy_id.view());
+  }
+
+  void on_order_changed(const axon::models::Order& order) override {
+    axon::transport::Event event;
+    event.event_type = "order_update";
+    event.data = axon::transport::to_json(order);
+    event.strategy_id = order.strategy_id.value_or(std::string());
+    zmq_.publish(event);
+  }
+
+  void on_fill(const axon::transport::FillMsg* msg, const axon::models::Fill& fill,
+               bool) override {
+    if (msg != nullptr) {
+      shm_.publish_fill(*msg, msg->strategy_id.view());
+    }
+    axon::transport::Event event;
+    event.event_type = "fill_update";
+    event.data = axon::transport::to_json(fill);
+    event.strategy_id = fill.strategy_id.value_or(std::string());
+    zmq_.publish(event);
+  }
+
+ private:
+  axon::transport::ZmqServer& zmq_;
+  axon::transport::ShmBridge& shm_;
+};
+
+// ---------------------------------------------------------------------------
+// The engine: wiring, the loop, and the strategy-facing command surface.
+//
+//   VenueConnections  every connection to every venue
+//   OmsService        orders, fills, positions, reconciliation
+//   EmsService        order entry
+//   RiskManager       pre-trade checks; consulted by the EMS, fed by the OMS
+//   ZMQ / ShmBridge   to and from strategies
+// ---------------------------------------------------------------------------
 class Engine {
  public:
   explicit Engine(axon::Config config)
       : config_(std::move(config)), log_(axon::util::get_logger("engine")) {}
 
   void start() {
-    // --- TLS -------------------------------------------------------------
-    tls_ = std::make_unique<axon::net::TlsContext>();
-    if (config_.runtime.verify_tls) {
-      tls_->use_default_trust_store();
-      if (!config_.runtime.extra_ca_file.empty()) {
-        AXON_LOG_INFO(log_, "adding extra trust anchor {}",
-                        config_.runtime.extra_ca_file);
-      }
-    } else {
-      // Loud, because a silently unverified connection to an exchange looks
-      // exactly like a verified one until it is not.
-      AXON_LOG_WARN(log_,
-                      "TLS VERIFICATION IS DISABLED. Never run this against a "
-                      "live venue.");
-      tls_->set_verify_peer(false);
-    }
-
-    // --- persistence ------------------------------------------------------
-    // Every store takes a repository. With a database that repository writes
-    // through to the writer thread; without one it is an in-memory twin. The
-    // stores themselves cannot tell the difference, which is the point: no
-    // `if (writer_)` scattered through the callbacks.
-    if (config_.database.has_value()) {
-      writer_ = std::make_unique<axon::repository::PostgresWriter>();
-      writer_->start(*config_.database);
-      // OrderStore persists through the writer; reads still come from the
-      // in-memory cache, never from a blocking SELECT on this thread.
-      orders_ = axon::oms::OrderStore(
-          std::make_shared<axon::repository::PostgresOrderRepository>(writer_.get()));
-      fills_ = axon::oms::FillStore(
-          std::make_shared<axon::repository::PostgresFillRepository>(writer_.get()));
-      portfolio_ = axon::oms::PortfolioStore(
-          std::make_shared<axon::repository::PostgresAccountRepository>(
-              writer_.get()),
-          std::make_shared<axon::repository::PostgresPositionRepository>(
-              writer_.get()));
-      AXON_LOG_INFO(log_, "persistence enabled");
-    } else {
-      AXON_LOG_WARN(log_,
-                      "no database configured: order and fill history lives only "
-                      "in memory and is lost on restart");
-    }
-
-    http_ = std::make_unique<axon::net::HttpClient>(tls_.get());
-    ems_ = std::make_unique<axon::ems::EmsService>(config_, http_.get());
+    connections_ = std::make_unique<axon::oms::VenueConnections>(config_);
+    oms_ = std::make_unique<axon::oms::OmsService>(config_);
+    ems_ = std::make_unique<axon::ems::EmsService>(config_, &connections_->http());
     // Cancel and amend on the perpetual venues need the order's symbol, which
-    // only the order store knows.
+    // only the OMS knows.
     ems_->set_order_lookup([this](const std::string& order_id) {
-      return orders_.get_order(order_id);
+      return oms_->get_order(order_id);
     });
 
-    // --- pre-trade risk -----------------------------------------------------
-    risk_ = axon::oms::RiskManager(config_.risk);
+    start_risk();
+
+    // Publisher first: the hot path must see an update before anything else.
+    publisher_ = std::make_unique<StrategyPublisher>(zmq_, shm_);
+    risk_feed_ = std::make_unique<axon::risk::RiskFeed>(risk_, [] { return seconds(); });
+    oms_->add_listener(publisher_.get());
+    oms_->add_listener(risk_feed_.get());
+
+    connections_->start(*oms_, [this](const std::string& exchange, std::int64_t id,
+                                      bool ok, std::string_view payload,
+                                      std::string_view error) {
+      ems_->on_rpc_reply(exchange, id, ok, payload, error);
+    });
+    for (const auto& venue : connections_->venues()) {
+      ems_->register_session(venue, connections_->session(venue));
+      if (auto* trade = connections_->trade_session(venue)) {
+        ems_->register_trade_session(venue, trade);
+      }
+    }
+    oms_->start(connections_->rests());
+
+    // --- hot path ---------------------------------------------------------
+    // Opt-in per strategy, because the consumer must busy-poll a core to use
+    // it. Nothing here changes the ZMQ path: a strategy with a ring gets both,
+    // and the ring simply arrives first.
+    if (!config_.runtime.shm_strategies.empty()) {
+      shm_.start(config_.runtime.shm_directory, config_.runtime.shm_strategies,
+                 config_.runtime.shm_slots);
+      shm_.set_handlers(
+          [this](const std::string& strategy, const axon::transport::PlaceOrderMsg& msg) {
+            on_hot_place(strategy, msg);
+          },
+          [this](const std::string& strategy, const axon::transport::CancelOrderMsg& msg) {
+            on_hot_cancel(strategy, msg);
+          });
+    }
+
+    // --- control plane ----------------------------------------------------
+    zmq_.start(config_.zmq, [this](const axon::transport::Command& c,
+                                   axon::transport::ZmqServer::ResponseSink sink) {
+      dispatch(c, std::move(sink));
+    });
+  }
+
+  void run() {
+    AXON_LOG_INFO(log_, "engine running; {} venue session(s)", connections_->venues().size());
+
+    std::uint64_t iterations = 0;
+    double last_report = seconds();
+
+    while (!g_stop.load(std::memory_order_acquire)) {
+      connections_->poll();
+      ems_->poll();
+      oms_->poll();
+      shm_.poll();
+      zmq_.poll();
+      poll_risk();
+      ++iterations;
+
+      // A heartbeat line, so a silent engine is distinguishable from a wedged
+      // one. Rate-limited to once a minute; it is not on any critical path.
+      const double now = seconds();
+      if (now - last_report > 60.0) {
+        last_report = now;
+        heartbeat();
+      }
+
+      axon::core::cpu_pause();
+    }
+
+    AXON_LOG_INFO(log_, "engine stopping after {} iterations", iterations);
+  }
+
+  void stop() {
+    zmq_.stop();
+    shm_.stop();
+    // The OMS first: its reconcilers borrow the REST clients the connections
+    // own. Then the connections, trade sessions before feeds.
+    if (oms_) oms_->stop();
+    if (connections_) connections_->stop();
+  }
+
+ private:
+  static double seconds() {
+    return static_cast<double>(axon::core::monotonic_ns()) / 1e9;
+  }
+
+  // --- risk ----------------------------------------------------------------
+  void start_risk() {
+    risk_ = axon::risk::RiskManager(config_.risk);
     ems_->set_risk_manager(&risk_);
+    if (config_.risk.cancel_all_on_kill) {
+      risk_.set_on_kill_engaged([this](const std::string&) { cancel_all_working_orders(); });
+    }
     bool limits_configured = any_limit(config_.risk.defaults) ||
                              config_.risk.max_orders_per_strategy_per_second > 0;
     for (const auto& [_, l] : config_.risk.instruments) limits_configured |= any_limit(l);
@@ -133,273 +226,49 @@ class Engine {
                     config_.risk.instruments.size(),
                     config_.risk.max_orders_per_strategy_per_second);
     }
-
-    // --- venue sessions ---------------------------------------------------
-    for (const auto& entry : config_.exchanges) {
-      const std::string& venue_name = entry.first;
-      const auto& exchange = entry.second;
-      axon::oms::VenueSessionHandlers handlers;
-      handlers.on_order = [this](const axon::transport::OrderUpdateMsg& m) {
-        on_order_update(m);
-      };
-      handlers.on_fill = [this](const axon::transport::FillMsg& m) {
-        on_fill(m);
-      };
-      handlers.on_account = [this](const axon::models::AccountSummary& a) {
-        // The store persists through its repository; nothing to do here.
-        portfolio_.update_account(a);
-        // Margin ratio is the one risk number worth a gauge: it is what an
-        // alert fires on before a liquidation, not after.
-        if (!a.equity.is_zero()) {
-          axon::util::get_metrics().set_account_margin_ratio(
-              a.exchange, a.currency,
-              a.maintenance_margin.to_double() / a.equity.to_double());
-        }
-      };
-      handlers.on_live = [this, venue_name]() {
-        AXON_LOG_INFO(log_, "[{}] session live", venue_name);
-        // Everything that happened while disconnected was missed; reconcile
-        // now rather than waiting for the next tick.
-        if (const auto it = reconcilers_.find(venue_name); it != reconcilers_.end()) {
-          it->second->on_session_live();
-        }
-      };
-      handlers.on_error = [this, venue_name](const std::string& what) {
-        AXON_LOG_WARN(log_, "[{}] {}", venue_name, what);
-      };
-      handlers.on_rpc_reply = [this, venue_name](std::int64_t id, bool success,
-                                                 std::string_view payload,
-                                                 std::string_view error) {
-        ems_->on_rpc_reply(venue_name, id, success, payload, error);
-      };
-
-      // One REST client per venue, shared by the session (Binance's listenKey),
-      // the EMS (cancel/amend) and the reconciler (snapshots), so all three
-      // reuse the same keep-alive connections.
-      auto rest = axon::oms::make_venue_rest(exchange, http_.get());
-      axon::oms::VenueRest* rest_ptr = rest.get();
-      if (rest) {
-        // Reconciliation and position snapshots only. Order entry does not go
-        // through here -- it rides the WebSocket sessions below.
-        rests_[venue_name] = std::move(rest);
-      }
-
-      auto session = axon::oms::make_venue_session(
-          exchange, config_.websocket, config_.runtime, tls_.get(), rest_ptr,
-          std::move(handlers));
-      if (!session) {
-        // Better a clear refusal at startup than a connection that never
-        // authenticates for reasons nobody can see.
-        AXON_LOG_ERROR(log_,
-                         "exchange '{}' is configured but not supported by this "
-                         "build; skipping it",
-                         venue_name);
-        continue;
-      }
-      session->start();
-      ems_->register_session(venue_name, session.get());
-      sessions_.push_back(std::move(session));
-
-      // --- the order-entry connection ---------------------------------------
-      //
-      // Binance and Bybit each need a SECOND connection for order entry; OKX
-      // sends orders on the session above and Deribit always has. There is no
-      // REST order path, so on those two venues THIS CONNECTION IS ORDER
-      // ENTRY: while it is down, the venue cannot trade.
-      {
-        axon::oms::VenueSessionHandlers trade_handlers;
-        // Order and fill updates arrive on the FEED, never here: this
-        // connection carries only replies to requests we sent.
-        trade_handlers.on_rpc_reply =
-            [this, venue_name](std::int64_t id, bool ok, std::string_view payload,
-                               std::string_view error) {
-              ems_->on_rpc_reply(venue_name, id, ok, payload, error);
-            };
-        trade_handlers.on_error = [this, venue_name](const std::string& what) {
-          AXON_LOG_ERROR(log_, "[{}] ORDER ENTRY IS DOWN: {}", venue_name, what);
-        };
-        if (auto trade = axon::oms::make_trade_session(
-                exchange, config_.websocket, config_.runtime, tls_.get(),
-                std::move(trade_handlers))) {
-          trade->start();
-          ems_->register_trade_session(venue_name, trade.get());
-          trade_sessions_.push_back(std::move(trade));
-        }
-      }
-
-      if (rest_ptr != nullptr) {
-        axon::oms::ReconcilerCallbacks rc;
-        rc.on_recovered_fill = [this](const axon::models::Fill& fill) {
-          record_recovered_fill(fill);
-        };
-        rc.on_positions = [this, venue_name](
-                              const std::vector<axon::models::Position>& positions) {
-          portfolio_.update_positions(venue_name, positions);
-          risk_.on_positions(venue_name, positions);
-          for (const auto& p : positions) {
-            risk_.update_reference_price(venue_name, p.instrument, p.mark_price, seconds());
-          }
-        };
-        reconcilers_[venue_name] = std::make_unique<axon::oms::Reconciler>(
-            config_, exchange, rest_ptr, &orders_, std::move(rc));
-      } else {
-        AXON_LOG_WARN(log_,
-                        "[{}] no reconciler: a dropped feed message will not be "
-                        "recovered on this venue",
-                        venue_name);
-      }
-    }
-
-    if (sessions_.empty()) {
-      AXON_LOG_WARN(log_, "no venue sessions started");
-    }
-
-    // --- hot path ---------------------------------------------------------
-    // Opt-in per strategy, because the consumer must busy-poll a core to use
-    // it. Nothing here changes the ZMQ path: a strategy with a ring gets both,
-    // and the ring simply arrives first.
-    if (!config_.runtime.shm_strategies.empty()) {
-      shm_.start(config_.runtime.shm_directory, config_.runtime.shm_strategies,
-                 config_.runtime.shm_slots);
-      shm_.set_handlers(
-          [this](const std::string& strategy,
-                 const axon::transport::PlaceOrderMsg& msg) {
-            on_hot_place(strategy, msg);
-          },
-          [this](const std::string& strategy,
-                 const axon::transport::CancelOrderMsg& msg) {
-            on_hot_cancel(strategy, msg);
-          });
-    }
-
-    // --- control plane ----------------------------------------------------
-    zmq_.start(config_.zmq,
-               [this](const axon::transport::Command& c,
-                      axon::transport::ZmqServer::ResponseSink sink) {
-                 dispatch(c, std::move(sink));
-               });
-
-    // Publish every order update to the strategies that care.
-    orders_.register_update_callback([this](const axon::models::Order& order) {
-      axon::transport::Event event;
-      event.event_type = "order_update";
-      event.data = axon::transport::to_json(order);
-      event.strategy_id = order.strategy_id.value_or(std::string());
-      zmq_.publish(event);
-    });
   }
 
-  void run() {
-    AXON_LOG_INFO(log_, "engine running; {} venue session(s)", sessions_.size());
-
-    std::uint64_t iterations = 0;
-    double last_report = seconds();
-
-    while (!g_stop.load(std::memory_order_acquire)) {
-      for (auto& session : sessions_) {
-        session->poll();
-      }
-      for (auto& session : trade_sessions_) {
-        session->poll();
-      }
-      http_->poll();
-      ems_->poll();
-      for (auto& [_, reconciler] : reconcilers_) {
-        reconciler->poll();
-      }
-      shm_.poll();
-      zmq_.poll();
-      ++iterations;
-
-      poll_risk();
-
-      // A heartbeat line, so a silent engine is distinguishable from a wedged
-      // one. Rate-limited to once a minute; it is not on any critical path.
-      const double now = seconds();
-      if (now - last_report > 60.0) {
-        last_report = now;
-        std::string states;
-        for (const auto& s : sessions_) {
-          states += s->exchange_name();
-          states += "=";
-          states += axon::oms::to_string(s->state());
-          states += " ";
-        }
-        AXON_LOG_INFO(log_,
-                        "alive: {} orders cached, {} fills ({} dup), {} commands, "
-                        "{} events, [{}]",
-                        orders_.cached_order_count(), fills_.accepted(),
-                        fills_.duplicates(), zmq_.commands_handled(),
-                        zmq_.events_published(), states);
-        if (shm_.active()) {
-          const auto hot = shm_.stats();
-          AXON_LOG_INFO(log_, "hot path: {} commands, {} events ({} dropped)",
-                          hot.commands_received, hot.events_published,
-                          hot.events_dropped);
-          // Only worth printing once something has been through it; an empty
-          // histogram table in the log is noise.
-          if (hot.commands_received > 0) {
-            AXON_LOG_INFO(log_, "hot command latency:\n{}", shm_.latency_report());
-          }
-          publish_hot_latency();
-        }
-      }
-
-      axon::core::cpu_pause();
-    }
-
-    AXON_LOG_INFO(log_, "engine stopping after {} iterations", iterations);
-  }
-
-  // Kill switch triggers and reference-price refresh. Cheap checks every
-  // iteration; anything that touches the filesystem or the network is
-  // rate-limited, since this runs on the hot loop.
+  // The engine's half of the risk layer: everything that touches the outside
+  // world -- signals, the filesystem, the network. The decisions themselves
+  // (who may release the kill switch, when a refresh is due) live in
+  // RiskManager, where they are tested.
   void poll_risk() {
     if (g_kill_requested.exchange(false, std::memory_order_acq_rel)) {
-      engage_kill_switch("SIGUSR1");
+      risk_.engage_kill_switch(axon::risk::KillSource::kSignal, "SIGUSR1");
     }
     if (g_release_requested.exchange(false, std::memory_order_acq_rel)) {
-      risk_.release_kill_switch();
-      kill_by_file_ = false;
+      risk_.release_kill_switch(axon::risk::KillSource::kSignal);
     }
 
+    // Filesystem and network work is rate-limited: this runs on the hot loop.
     const double now = seconds();
     if (now - last_risk_tick_ < 1.0) {
       return;
     }
     last_risk_tick_ = now;
 
-    // The file is level-triggered: present means stopped. Only a file-engaged
-    // switch is released by removing the file, so deleting it cannot undo a
-    // SIGUSR1 someone sent for a different reason.
     if (!config_.risk.kill_switch_file.empty()) {
       std::error_code ec;
       const bool present = std::filesystem::exists(config_.risk.kill_switch_file, ec);
-      if (present && !risk_.kill_switch_engaged()) {
-        engage_kill_switch("kill switch file " + config_.risk.kill_switch_file);
-        kill_by_file_ = true;
-      } else if (!present && kill_by_file_) {
-        risk_.release_kill_switch();
-        kill_by_file_ = false;
+      if (ec) {
+        // Fail closed: a check that could not run says nothing about the
+        // file, and must never release a stop because of it.
+        AXON_LOG_WARN(log_, "cannot check kill switch file {}: {}",
+                      config_.risk.kill_switch_file, ec.message());
+      } else {
+        risk_.observe_kill_file(present, config_.risk.kill_switch_file);
       }
     }
 
-    if (config_.risk.reference_refresh_seconds > 0 &&
-        now - last_reference_refresh_ >= config_.risk.reference_refresh_seconds) {
-      last_reference_refresh_ = now;
+    if (risk_.reference_refresh_due(now)) {
       refresh_reference_prices();
     }
   }
 
-  void engage_kill_switch(const std::string& reason) {
-    if (risk_.kill_switch_engaged()) {
-      return;
-    }
-    risk_.engage_kill_switch(reason);
-    if (!config_.risk.cancel_all_on_kill) {
-      return;
-    }
-    const auto working = orders_.active_orders();
+  // Wired to RiskManager::set_on_kill_engaged: stopping new orders is not
+  // enough when working orders can still fill.
+  void cancel_all_working_orders() {
+    const auto working = oms_->active_orders();
     AXON_LOG_ERROR(log_, "kill switch: cancelling {} working order(s)", working.size());
     for (const auto& order : working) {
       ems_->cancel_order(order.exchange, order.order_id,
@@ -412,29 +281,43 @@ class Engine {
     }
   }
 
-  // For every "exchange:instrument" named under cpp.risk.instruments, fetch a
-  // ticker and use its mid as the reference price. Positions and fills keep
+  // A ticker mid for each reference target. Positions and fills keep the
   // references fresh for instruments being traded; this covers the ones that
   // are not yet, which is exactly when a fat-fingered first order lands.
   void refresh_reference_prices() {
-    for (const auto& [key, _] : config_.risk.instruments) {
-      const auto colon = key.find(':');
-      if (colon == std::string::npos) {
+    for (const auto& target : risk_.reference_targets()) {
+      auto* rest = connections_->rest(target.exchange);
+      if (rest == nullptr) {
         continue;
       }
-      const std::string exchange = key.substr(0, colon);
-      const std::string instrument = key.substr(colon + 1);
-      const auto rest = rests_.find(exchange);
-      if (rest == rests_.end()) {
-        continue;
-      }
-      rest->second->get_ticker(
-          instrument, [this, exchange, instrument](std::optional<axon::models::Ticker> t,
-                                                   const std::string&) {
+      rest->get_ticker(
+          target.instrument,
+          [this, exchange = target.exchange, instrument = target.instrument](
+              std::optional<axon::models::Ticker> t, const std::string&) {
             if (t.has_value() && t->best_bid_price.raw() > 0 && t->best_ask_price.raw() > 0) {
               risk_.update_reference_price(exchange, instrument, t->mid(), seconds());
             }
           });
+    }
+  }
+
+  // --- heartbeat -------------------------------------------------------------
+  void heartbeat() {
+    AXON_LOG_INFO(log_,
+                  "alive: {} orders cached, {} fills ({} dup), {} commands, {} events, [{}]",
+                  oms_->cached_order_count(), oms_->fills_accepted(), oms_->fills_duplicate(),
+                  zmq_.commands_handled(), zmq_.events_published(),
+                  connections_->state_summary());
+    if (shm_.active()) {
+      const auto hot = shm_.stats();
+      AXON_LOG_INFO(log_, "hot path: {} commands, {} events ({} dropped)",
+                    hot.commands_received, hot.events_published, hot.events_dropped);
+      // Only worth printing once something has been through it; an empty
+      // histogram table in the log is noise.
+      if (hot.commands_received > 0) {
+        AXON_LOG_INFO(log_, "hot command latency:\n{}", shm_.latency_report());
+      }
+      publish_hot_latency();
     }
   }
 
@@ -447,8 +330,7 @@ class Engine {
     auto& metrics = axon::util::get_metrics();
     const auto& lat = shm_.command_latency();
 
-    const auto publish = [&](const std::string& name,
-                             const axon::core::Histogram& h) {
+    const auto publish = [&](const std::string& name, const axon::core::Histogram& h) {
       metrics.set_hot_stage(name, h.count(), h.p50(), h.p99(), h.p999(), h.max());
     };
 
@@ -465,111 +347,30 @@ class Engine {
     shm_.reset_latency();
   }
 
-  void stop() {
-    zmq_.stop();
-    shm_.stop();
-    reconcilers_.clear();
-    rests_.clear();
-    for (auto& session : trade_sessions_) {
-      session->stop();
-    }
-    trade_sessions_.clear();
-    for (auto& session : sessions_) {
-      session->stop();
-    }
-    sessions_.clear();
-    if (writer_) {
-      // Flush what is queued before the process exits; the writer thread
-      // drains on stop().
-      writer_->stop();
-    }
-  }
-
- private:
-  static double seconds() {
-    return static_cast<double>(axon::core::monotonic_ns()) / 1e9;
-  }
-
-  void on_order_update(const axon::transport::OrderUpdateMsg& venue_msg) {
-    // The venue echoes the client order id we sent, which the parser put in
-    // internal_order_id. Map it back to the request that produced it -- its
-    // real internal id and, above all, its strategy -- before publishing, or
-    // the update goes to every strategy (and to none in particular).
-    axon::transport::OrderUpdateMsg msg = venue_msg;
-    if (const auto sub = orders_.find_submission(std::string(msg.exchange.view()),
-                                                 msg.internal_order_id.view())) {
-      static_cast<void>(msg.internal_order_id.assign(sub->internal_order_id));
-      static_cast<void>(msg.strategy_id.assign(sub->strategy_id.value_or(std::string())));
-    }
-
-    // FAST PATH FIRST. The bytes go to the co-located strategies before
-    // anything below allocates, because everything below is the control-plane
-    // copy and none of it is on the strategy's critical path.
-    shm_.publish_order(msg, msg.strategy_id.view());
-
-    // decode_order_update allocates. It is on the receive path, which is a
-    // known compromise: OrderStore is built around the domain Order the Python
-    // uses, and converting to it here is what keeps the two implementations
-    // behaviourally identical.
-    auto order = axon::transport::decode_order_update(msg);
-    risk_.on_order_update(order);
-    orders_.update_from_ws(std::move(order));
-  }
-
-  void on_fill(const axon::transport::FillMsg& venue_msg) {
-    // A venue fill carries no strategy; the order it belongs to does. The
-    // order update for it is always handled first (see the parsers), so it is
-    // known by now.
-    axon::transport::FillMsg msg = venue_msg;
-    if (msg.strategy_id.empty()) {
-      if (const auto order = orders_.get_order(std::string(msg.order_id.view()));
-          order.has_value() && order->strategy_id.has_value()) {
-        static_cast<void>(msg.strategy_id.assign(*order->strategy_id));
-      }
-    }
-    const auto fill = axon::transport::decode_fill(msg);
-    // Tell the reconciler we have seen this trade_id, so its next pass does
-    // not "recover" a fill that arrived normally and double-count it.
-    if (const auto it = reconcilers_.find(fill.exchange); it != reconcilers_.end()) {
-      it->second->note_fill(fill.trade_id);
-    }
-    // Deduplicate BEFORE publishing anything. A trade_id a strategy has already
-    // acted on must not reach it twice; that guarantee is what lets the feed
-    // and the reconciler both report fills without coordinating.
-    if (!fills_.add_fill(fill)) {
-      return;
-    }
-    risk_.on_fill(fill);
-    risk_.update_reference_price(fill.exchange, fill.instrument, fill.price, seconds());
-    // Forward the ORIGINAL bytes rather than re-encoding the decoded copy.
-    shm_.publish_fill(msg, msg.strategy_id.view());
-    publish_fill_event(fill);
-  }
-
-  // A fill the venue had but we never saw on the feed. Same idempotency check,
-  // so a reconciler pass that re-reports a known trade does nothing.
-  void record_recovered_fill(const axon::models::Fill& fill) {
-    if (!fills_.add_fill(fill)) {
-      return;
-    }
-    risk_.on_fill(fill);
-    AXON_LOG_WARN(log_, "recovered fill {} for order {}", fill.trade_id,
-                    fill.order_id);
-    if (shm_.active()) {
-      axon::transport::FillMsg msg;
-      if (axon::transport::encode_fill(fill, ++hot_seq_, msg)) {
-        shm_.publish_fill(msg, fill.strategy_id.value_or(std::string()));
-      }
-    }
-    publish_fill_event(fill);
-  }
-
-  void publish_fill_event(const axon::models::Fill& fill) {
-    axon::transport::Event event;
-    event.event_type = "fill_update";
-    event.data = axon::transport::to_json(fill);
-    event.strategy_id = fill.strategy_id.value_or(std::string());
-    zmq_.publish(event);
+  // --- order entry -------------------------------------------------------------
+  // Every placement, from either transport, goes through here: the OMS
+  // registers the request before the EMS sends it and records the verdict
+  // after, so an update for it routes back even if the reply is lost.
+  void place(const std::string& exchange, const axon::models::OrderRequest& request,
+             std::function<void(const axon::ems::OrderResult&)> done) {
+    using Outcome = axon::oms::OmsService::PlaceOutcome;
+    const double started = seconds();
+    oms_->before_place(exchange, request);
+    ems_->place_order(
+        exchange, request,
+        [this, exchange, request, started, done = std::move(done)](
+            const axon::ems::OrderResult& r) {
+          axon::util::get_metrics().observe_order_submit_latency(exchange,
+                                                                 seconds() - started);
+          const Outcome outcome = r.success           ? Outcome::kAccepted
+                                  : r.outcome_unknown ? Outcome::kUnknown
+                                                      : Outcome::kRefused;
+          if (outcome == Outcome::kRefused) {
+            axon::util::get_metrics().inc_order_place_failure(exchange, "rejected");
+          }
+          oms_->after_place(exchange, request, outcome, r.order);
+          done(r);
+        });
   }
 
   // --- hot path commands ----------------------------------------------------
@@ -577,83 +378,66 @@ class Engine {
   // reply: the strategy learns the outcome from the order update it will get
   // back on the same ring. A synchronous reply would reintroduce the round
   // trip the ring exists to remove.
-  void on_hot_place(const std::string& strategy,
-                    const axon::transport::PlaceOrderMsg& msg) {
+  void on_hot_place(const std::string& strategy, const axon::transport::PlaceOrderMsg& msg) {
     auto request = axon::transport::decode_place_order(msg);
     // The ring is per-strategy, so its identity is structural. Trusting the
     // field instead would let one strategy write another's id.
     request.strategy_id = strategy;
     const std::string exchange(msg.exchange.view());
-    const double started = seconds();
-    orders_.register_submission(exchange, request);
-    ems_->place_order(exchange, request,
-                      [this, exchange, request, started](const axon::ems::OrderResult& r) {
-                        axon::util::get_metrics().observe_order_submit_latency(
-                            exchange, seconds() - started);
-                        if (!r.success) {
-                          if (r.outcome_unknown) {
-                            // The strategy learns the outcome from the order
-                            // update, which the submission routes back to it.
-                            AXON_LOG_WARN(log_, "[{}] hot place {} outcome unknown: {}",
-                                            exchange, request.internal_order_id, r.error);
-                            return;
-                          }
-                          orders_.forget_submission(exchange, request);
-                          axon::util::get_metrics().inc_order_place_failure(
-                              exchange, "rejected");
-                          AXON_LOG_WARN(log_, "[{}] hot place rejected: {}",
-                                          exchange, r.error);
-                          return;
-                        }
-                        if (r.order.has_value()) {
-                          orders_.add_order(*r.order);
-                        }
-                      });
+    place(exchange, request, [this, exchange, id = request.internal_order_id](
+                                 const axon::ems::OrderResult& r) {
+      if (r.success) {
+        return;
+      }
+      if (r.outcome_unknown) {
+        // The update, if the order is live, is routed back to the strategy.
+        AXON_LOG_WARN(log_, "[{}] hot place {} outcome unknown: {}", exchange, id, r.error);
+      } else {
+        AXON_LOG_WARN(log_, "[{}] hot place {} rejected: {}", exchange, id, r.error);
+      }
+    });
   }
 
-  void on_hot_cancel(const std::string& strategy,
-                     const axon::transport::CancelOrderMsg& msg) {
+  void on_hot_cancel(const std::string& strategy, const axon::transport::CancelOrderMsg& msg) {
     const std::string exchange(msg.exchange.view());
     const std::string order_id(msg.order_id.view());
     const double started = seconds();
     ems_->cancel_order(exchange, order_id,
-                       [this, exchange, order_id, strategy, started](
-                           bool success, const std::string& error) {
+                       [this, exchange, order_id, strategy, started](bool success,
+                                                                     const std::string& error) {
                          axon::util::get_metrics().observe_order_cancel_latency(
                              exchange, seconds() - started);
                          if (!success) {
-                           AXON_LOG_WARN(log_, "[{}] hot cancel of {} failed for "
-                                                 "{}: {}",
-                                           exchange, order_id, strategy, error);
+                           AXON_LOG_WARN(log_, "[{}] hot cancel of {} failed for {}: {}",
+                                         exchange, order_id, strategy, error);
                          }
                        });
   }
 
+  // --- control plane commands ---------------------------------------------
   void dispatch(const axon::transport::Command& command,
                 axon::transport::ZmqServer::ResponseSink sink) {
     using axon::transport::Response;
     const auto typed = command.typed();
     if (!typed.has_value()) {
-      sink(Response::fail(command.request_id,
-                          "unknown command type: " + command.command_type));
+      sink(Response::fail(command.request_id, "unknown command type: " + command.command_type));
       return;
     }
 
     switch (*typed) {
       case axon::models::CommandType::kGetOrder: {
         const auto id = command.payload.value("order_id", std::string());
-        const auto order = orders_.get_order(id);
-        sink(Response::ok(command.request_id,
-                          order.has_value() ? axon::transport::to_json(*order)
-                                            : axon::transport::Json()));
+        const auto order = oms_->get_order(id);
+        sink(Response::ok(command.request_id, order.has_value()
+                                                  ? axon::transport::to_json(*order)
+                                                  : axon::transport::Json()));
         return;
       }
 
       case axon::models::CommandType::kGetAllOrders:
       case axon::models::CommandType::kGetActiveOrders: {
-        const bool active_only =
-            *typed == axon::models::CommandType::kGetActiveOrders;
-        auto orders = active_only ? orders_.active_orders() : orders_.all_orders();
+        const bool active_only = *typed == axon::models::CommandType::kGetActiveOrders;
+        auto orders = active_only ? oms_->active_orders() : oms_->all_orders();
         axon::transport::Json array = axon::transport::Json::array();
         for (const auto& o : orders) {
           // Strategies see only their own orders, matching the Python.
@@ -670,22 +454,19 @@ class Engine {
       case axon::models::CommandType::kGetAccountSummary: {
         const auto exchange = command.payload.value("exchange", std::string());
         const auto currency = command.payload.value("currency", std::string("BTC"));
-        const auto account = portfolio_.account(exchange, currency);
-        sink(Response::ok(command.request_id,
-                          account.has_value()
-                              ? axon::transport::to_json(*account)
-                              : axon::transport::Json()));
+        const auto account = oms_->account(exchange, currency);
+        sink(Response::ok(command.request_id, account.has_value()
+                                                  ? axon::transport::to_json(*account)
+                                                  : axon::transport::Json()));
         return;
       }
 
       case axon::models::CommandType::kGetFillsByOrder:
       case axon::models::CommandType::kGetFillsByStrategy: {
-        const bool by_order =
-            *typed == axon::models::CommandType::kGetFillsByOrder;
-        const auto key = by_order
-                             ? command.payload.value("order_id", std::string())
-                             : command.payload.value("strategy_id", std::string());
-        const auto matches = by_order ? fills_.by_order(key) : fills_.by_strategy(key);
+        const bool by_order = *typed == axon::models::CommandType::kGetFillsByOrder;
+        const auto key = by_order ? command.payload.value("order_id", std::string())
+                                  : command.payload.value("strategy_id", std::string());
+        const auto matches = by_order ? oms_->fills_by_order(key) : oms_->fills_by_strategy(key);
         axon::transport::Json array = axon::transport::Json::array();
         for (const auto& f : matches) {
           array.push_back(axon::transport::to_json(f));
@@ -709,44 +490,26 @@ class Engine {
         if (!command.strategy_id.empty()) {
           request->strategy_id = command.strategy_id;
         }
-
-        const std::string request_id = command.request_id;
-        const double started = seconds();
-        orders_.register_submission(exchange, *request);
         // DEFERRED. Placing an order is a network round trip; replying inline
         // would stall every venue feed for its duration.
-        ems_->place_order(
-            exchange, *request,
-            [this, sink, request_id, exchange, started, req = *request](
-                const axon::ems::OrderResult& result) mutable {
-              axon::util::get_metrics().observe_order_submit_latency(
-                  exchange, seconds() - started);
-              if (!result.success) {
-                if (result.outcome_unknown) {
-                  // Not a rejection: the order may be live. The prefix tells
-                  // the strategy not to resubmit, and the submission stays
-                  // registered so the venue's update still finds its way back.
+        place(exchange, *request,
+              [sink, request_id = command.request_id](const axon::ems::OrderResult& r) mutable {
+                if (!r.success) {
+                  // Unknown is not a rejection: the order may be live. The
+                  // prefix tells the strategy not to resubmit.
                   sink(Response::fail(
-                      request_id, std::string(axon::transport::kOutcomeUnknownPrefix) +
-                                      result.error));
+                      request_id,
+                      r.outcome_unknown
+                          ? std::string(axon::transport::kOutcomeUnknownPrefix) + r.error
+                          : r.error));
                   return;
                 }
-                orders_.forget_submission(exchange, req);
-                axon::util::get_metrics().inc_order_place_failure(exchange,
-                                                                   "rejected");
-                sink(Response::fail(request_id, result.error));
-                return;
-              }
-              if (result.order.has_value()) {
-                orders_.add_order(*result.order);
-                sink(Response::ok(request_id,
-                                  axon::transport::to_json(*result.order)));
-              } else {
-                // Accepted, but the venue's REST reply carries no order we can
-                // trust; the authoritative state arrives on the feed.
-                sink(Response::ok(request_id, axon::transport::Json()));
-              }
-            });
+                // Accepted. When the reply carried no order, the authoritative
+                // state arrives on the feed.
+                sink(Response::ok(request_id, r.order.has_value()
+                                                  ? axon::transport::to_json(*r.order)
+                                                  : axon::transport::Json()));
+              });
         return;
       }
 
@@ -758,15 +521,13 @@ class Engine {
         ems_->cancel_order(exchange, order_id,
                            [sink, request_id, exchange, started](
                                bool success, const std::string& error) mutable {
-                             axon::util::get_metrics()
-                                 .observe_order_cancel_latency(exchange,
-                                                               seconds() - started);
+                             axon::util::get_metrics().observe_order_cancel_latency(
+                                 exchange, seconds() - started);
                              if (!success) {
                                sink(Response::fail(request_id, error));
                                return;
                              }
-                             sink(Response::ok(request_id,
-                                               axon::transport::Json(true)));
+                             sink(Response::ok(request_id, axon::transport::Json(true)));
                            });
         return;
       }
@@ -777,26 +538,22 @@ class Engine {
         std::optional<axon::core::Qty> amount;
         std::optional<axon::core::Price> price;
         if (command.payload.contains("amount") && !command.payload["amount"].is_null()) {
-          amount = axon::core::Qty::from_double(
-              command.payload["amount"].get<double>());
+          amount = axon::core::Qty::from_double(command.payload["amount"].get<double>());
         }
         if (command.payload.contains("price") && !command.payload["price"].is_null()) {
-          price = axon::core::Price::from_double(
-              command.payload["price"].get<double>());
+          price = axon::core::Price::from_double(command.payload["price"].get<double>());
         }
         const std::string request_id = command.request_id;
         ems_->modify_order(exchange, order_id, amount, price,
-                           [sink, request_id](
-                               const axon::ems::OrderResult& result) mutable {
+                           [sink, request_id](const axon::ems::OrderResult& result) mutable {
                              if (!result.success) {
                                sink(Response::fail(request_id, result.error));
                                return;
                              }
-                             sink(Response::ok(
-                                 request_id,
-                                 result.order.has_value()
-                                     ? axon::transport::to_json(*result.order)
-                                     : axon::transport::Json()));
+                             sink(Response::ok(request_id,
+                                               result.order.has_value()
+                                                   ? axon::transport::to_json(*result.order)
+                                                   : axon::transport::Json()));
                            });
         return;
       }
@@ -804,25 +561,22 @@ class Engine {
       case axon::models::CommandType::kGetTicker: {
         const auto exchange = command.payload.value("exchange", std::string());
         const auto instrument = command.payload.value("instrument", std::string());
-        const auto it = rests_.find(exchange);
-        if (it == rests_.end()) {
-          sink(Response::fail(command.request_id,
-                              "no REST client for " + exchange));
+        auto* rest = connections_->rest(exchange);
+        if (rest == nullptr) {
+          sink(Response::fail(command.request_id, "no REST client for " + exchange));
           return;
         }
         // A live REST read, deferred like order entry: it is a round trip and
         // must not be answered inline.
-        const std::string request_id = command.request_id;
-        it->second->get_ticker(instrument,
-                        [sink, request_id](std::optional<axon::models::Ticker> ticker,
-                                           const std::string& error) mutable {
-                          if (!ticker.has_value()) {
-                            sink(Response::fail(request_id, error));
-                            return;
-                          }
-                          sink(Response::ok(request_id,
-                                            axon::transport::to_json(*ticker)));
-                        });
+        rest->get_ticker(instrument, [sink, request_id = command.request_id](
+                                         std::optional<axon::models::Ticker> ticker,
+                                         const std::string& error) mutable {
+          if (!ticker.has_value()) {
+            sink(Response::fail(request_id, error));
+            return;
+          }
+          sink(Response::ok(request_id, axon::transport::to_json(*ticker)));
+        });
         return;
       }
 
@@ -833,7 +587,7 @@ class Engine {
         // Served from the cache the position reconciler refreshes, not from a
         // fresh REST call: a strategy polling positions should not add a round
         // trip to the venue each time.
-        for (const auto& p : portfolio_.positions(exchange)) {
+        for (const auto& p : oms_->positions(exchange)) {
           if (!currency.empty() && p.instrument.rfind(currency, 0) != 0) {
             continue;
           }
@@ -848,29 +602,18 @@ class Engine {
 
   axon::Config config_;
   std::shared_ptr<spdlog::logger> log_;
-  std::unique_ptr<axon::net::TlsContext> tls_;
-  std::vector<std::unique_ptr<axon::oms::VenueSession>> sessions_;
-  // The extra order-entry connections. Separate from sessions_ because they
-  // carry no feed and must be torn down first -- a trade session outliving the
-  // EMS pointer that references it would be a use-after-free on shutdown.
-  std::vector<std::unique_ptr<axon::oms::VenueSession>> trade_sessions_;
-  axon::oms::OrderStore orders_;
-  axon::oms::RiskManager risk_;
-  bool kill_by_file_ = false;
-  double last_risk_tick_ = 0.0;
-  double last_reference_refresh_ = 0.0;
-  axon::oms::FillStore fills_;
-  axon::oms::PortfolioStore portfolio_;
+  // Declaration order is destruction order in reverse: everything that holds
+  // a pointer into the connections (EMS sessions, OMS reconcilers) is
+  // declared after them and so destroyed first.
+  std::unique_ptr<axon::oms::VenueConnections> connections_;
+  std::unique_ptr<axon::oms::OmsService> oms_;
+  std::unique_ptr<axon::ems::EmsService> ems_;
+  axon::risk::RiskManager risk_;
+  std::unique_ptr<axon::risk::RiskFeed> risk_feed_;
   axon::transport::ZmqServer zmq_;
   axon::transport::ShmBridge shm_;
-  // Sequence for messages this process originates. Venue-sourced messages
-  // carry the parser's numbering; only recovered fills are minted here.
-  std::uint64_t hot_seq_ = 0;
-  std::unique_ptr<axon::net::HttpClient> http_;
-  std::unique_ptr<axon::ems::EmsService> ems_;
-  std::unique_ptr<axon::repository::PostgresWriter> writer_;
-  std::map<std::string, std::unique_ptr<axon::oms::VenueRest>> rests_;
-  std::map<std::string, std::unique_ptr<axon::oms::Reconciler>> reconcilers_;
+  std::unique_ptr<StrategyPublisher> publisher_;
+  double last_risk_tick_ = 0.0;
 };
 
 }  // namespace

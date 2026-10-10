@@ -25,7 +25,7 @@ std::string pending_key(const std::string& exchange, std::int64_t id) {
 
 
 EmsService::EmsService(const Config& config, net::HttpClient* http)
-    : config_(config), http_(http) {}
+    : config_(config), http_(http), venues_(std::make_unique<VenueState>()) {}
 
 EmsService::~EmsService() = default;
 
@@ -146,7 +146,7 @@ bool EmsService::place_via_websocket(const std::string& exchange,
 
   char buf[kMaxRequestBytes];
 
-  const BuildContext ctx{exchange_config(exchange),
+  const BuildContext ctx{venues_.get(), exchange_config(exchange),
                          core::wall_clock_ns() / 1'000'000LL};
   std::int64_t id = 0;
   const std::size_t n = ops.build_place(buf, sizeof(buf), request, ctx, id);
@@ -188,7 +188,7 @@ bool EmsService::cancel_via_websocket(const std::string& exchange,
   }
 
   char buf[kMaxRequestBytes];
-  const BuildContext ctx{exchange_config(exchange),
+  const BuildContext ctx{venues_.get(), exchange_config(exchange),
                          core::wall_clock_ns() / 1'000'000LL};
   std::int64_t id = 0;
   const std::size_t n =
@@ -223,7 +223,7 @@ bool EmsService::modify_via_websocket(const std::string& exchange,
   }
 
   char buf[kMaxRequestBytes];
-  const BuildContext ctx{exchange_config(exchange),
+  const BuildContext ctx{venues_.get(), exchange_config(exchange),
                          core::wall_clock_ns() / 1'000'000LL};
   std::int64_t id = 0;
   const std::size_t n =
@@ -370,7 +370,7 @@ void EmsService::on_rpc_reply(const std::string& exchange, std::int64_t id,
         OrderResult{false, std::nullopt, "no order-entry implementation for " + exchange});
     return;
   }
-  pending.order_callback(ops->interpret_reply(payload, pending.request));
+  pending.order_callback(ops->interpret_reply(payload, pending.request, *venues_));
 }
 
 void EmsService::remember_submission(const std::string& key) {

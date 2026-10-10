@@ -5,7 +5,7 @@
 // what ems/deribit/deribit.py sends. Checking only the byte string would pass
 // on output that no JSON parser accepts.
 
-#include "axon/venue/deribit/deribit_builder.h"
+#include "axon/exchanges/deribit/deribit_builder.h"
 
 #include <gtest/gtest.h>
 

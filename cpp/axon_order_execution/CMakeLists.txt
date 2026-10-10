@@ -132,10 +132,10 @@ target_link_libraries(axon_net PUBLIC axon_core PRIVATE OpenSSL::SSL OpenSSL::Cr
 # ---------------------------------------------------------------------------
 add_library(axon_venue
   src/venue/json_writer.cpp
-  src/venue/deribit/deribit_builder.cpp
-  src/venue/binance/binance_builder.cpp
-  src/venue/bybit/bybit_builder.cpp
-  src/venue/okx/okx_builder.cpp
+  src/exchanges/deribit/deribit_builder.cpp
+  src/exchanges/binance/binance_builder.cpp
+  src/exchanges/bybit/bybit_builder.cpp
+  src/exchanges/okx/okx_builder.cpp
 )
 add_library(axon::venue ALIAS axon_venue)
 # axon_net is needed for HMAC-SHA256 and base64: Bybit and OKX sign their
@@ -181,18 +181,25 @@ add_library(axon_app
   src/util/metrics.cpp
   src/ems/ems_service.cpp
   src/ems/venue_ops.cpp
-  src/ems/deribit/deribit_ems.cpp
-  src/ems/okx/okx_ems.cpp
-  src/ems/bybit/bybit_ems.cpp
-  src/ems/binance/binance_ems.cpp
+  src/exchanges/deribit/deribit_ems.cpp
+  src/exchanges/okx/okx_ems.cpp
+  src/exchanges/bybit/bybit_ems.cpp
+  src/exchanges/binance/binance_ems.cpp
   src/repository/postgres.cpp
   src/client/strategy_client.cpp
+  src/oms/oms_service.cpp
+  src/oms/oms_venue.cpp
+  src/exchanges/binance/binance_oms.cpp
+  src/exchanges/bybit/bybit_oms.cpp
+  src/exchanges/deribit/deribit_oms.cpp
+  src/exchanges/okx/okx_oms.cpp
   src/oms/order_store.cpp
   src/oms/portfolio_store.cpp
   src/oms/reconciler.cpp
-  src/oms/risk_manager.cpp
   src/oms/venue_rest.cpp
+  src/oms/venue_connections.cpp
   src/oms/venue_session.cpp
+  src/risk/risk_manager.cpp
   src/transport/shm_bridge.cpp
   src/transport/zmq_server.cpp
 )

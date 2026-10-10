@@ -28,6 +28,7 @@
 
 #include "axon/config.h"
 #include "axon/ems/ems_service.h"
+#include "axon/ems/venue_ops.h"
 #include "axon/models/order.h"
 #include "axon/oms/order_store.h"
 #include "axon/oms/reconciler.h"
@@ -221,6 +222,25 @@ TEST_F(EmsSafetyTest, BinanceAcceptanceCarriesTheVenueOrder) {
   EXPECT_EQ(out->order->internal_order_id.value_or(""), req.internal_order_id);
   EXPECT_EQ(out->order->strategy_id.value_or(""), "alpha");
   EXPECT_EQ(out->order->price->raw(), req.price->raw());
+}
+
+// The request-id counter belongs to the EMS that uses it, not to the process:
+// two engines (or two tests) never share one, and every venue starts high
+// enough that no session handshake id can be mistaken for an order reply.
+TEST(EmsRequestIds, EachEmsCountsFromTheFirstRequestIdOnItsOwn) {
+  auto first_id = [] {
+    EmsService ems(binance_config(), nullptr);
+    FakeLiveSession session("binance");
+    ems.register_trade_session("binance", &session);
+    ems.place_order("binance", limit_buy(), [](const OrderResult&) {});
+    ems.place_order("binance", limit_buy(), [](const OrderResult&) {});
+    return std::make_pair(session.id_of(0), session.id_of(1));
+  };
+  const auto a = first_id();
+  const auto b = first_id();
+  EXPECT_EQ(a.first, axon::ems::kEmsFirstRequestId);
+  EXPECT_EQ(a.second, axon::ems::kEmsFirstRequestId + 1);
+  EXPECT_EQ(b, a) << "a second EMS continued the first one's counter";
 }
 
 // ===========================================================================

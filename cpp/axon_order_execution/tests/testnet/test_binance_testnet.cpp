@@ -740,10 +740,15 @@ TEST_F(BinanceTestnet, ResubmittingTheSameRequestIsRefused) {
   EXPECT_FALSE(again.success);
   EXPECT_NE(again.error.find("duplicate internal_order_id"), std::string::npos) << again.error;
 
-  auto [orders, err] = h_->open_orders();
-  ASSERT_EQ(err, "");
+  // REST trails the feed, so wait for the order to be listed -- then it must
+  // be listed exactly once.
   int with_label = 0;
-  for (auto& o : orders) with_label += o.internal_order_id.value_or("") == label;
+  eventually(h_, [&] {
+    auto [orders, err] = h_->open_orders();
+    with_label = 0;
+    for (auto& o : orders) with_label += o.internal_order_id.value_or("") == label;
+    return err.empty() && with_label > 0;
+  });
   EXPECT_EQ(with_label, 1) << "the venue holds more than one order for one request";
 
   h_->cancel(*id);

@@ -81,8 +81,30 @@ Python 策略能连这个引擎**不用改一行代码**——两边的 JSON 控
 | `models/` | core | 领域类型 + 枚举字符串表 |
 | `transport/` | models, nlohmann | 控制面 JSON 编解码、数据面 POD 消息、ZMQ 服务、共享内存桥 |
 | `net/` | core, OpenSSL | 手写 WebSocket、非阻塞 TCP、TLS（memory BIO）、SHA-1/SHA-256/HMAC/base64 |
-| `venue/` | transport, simdjson, net | 四家的入站解析和出站构造 |
-| `app/` | 以上全部 + yaml-cpp / spdlog / prometheus-cpp / cppzmq / libpqxx | 配置、日志、指标、订单状态、会话、对账、持久化 |
+| `venue/` + `exchanges/<交易所>/*_builder`、`*_parser` | transport, simdjson, net | 共用 JSON 工具，以及四家的入站解析和出站构造（`axon_venue` 库） |
+| `app/` | 以上全部 + yaml-cpp / spdlog / prometheus-cpp / cppzmq / libpqxx | `ems/`、`oms/`、`risk/`、`exchanges/<交易所>/*_ems`、`*_oms`，以及配置、日志、指标、持久化 |
+
+#### 代码组织：通用服务 + 每家交易所一个目录
+
+```
+ems/        EmsService：下单、撤单、改单，超时，重复提交防护（与交易所无关）
+oms/        OmsService：订单、成交、持仓、对账；VenueConnections：所有连接
+risk/       RiskManager：风控（只依赖配置和模型；risk_feed.h 是它与 OMS 之间唯一的桥）
+venue/      四家共用的协议工具：JSON 读写、统一的解析结果类型
+exchanges/<交易所>/
+  <x>_builder.*    出站报文构造（下单、登录、订阅）       ┐ 编进 axon_venue，
+  <x>_parser.h     入站报文解析（订单、成交、账户推送）   ┘ 不依赖 ems/oms
+  <x>_ems.*        这家的下单函数表 VenueOps
+  <x>_oms.*        这家的行情回报连接、下单连接、REST 快照（函数表 OmsVenue）
+```
+
+**新增一家交易所**，只需要：
+
+1. 新建 `exchanges/<交易所>/`，写构造器、解析器、`<x>_ems.cpp`（填一张 `VenueOps`）和 `<x>_oms.cpp`（填一张 `OmsVenue`）；
+2. 在 `ems/venue_ops.cpp` 和 `oms/oms_venue.cpp` 的注册表里各加一行；
+3. 在 CMakeLists 里加上这几个源文件；在 `ems/venue_ops.h` 的 `VenueState` 里加上它的构造器。
+
+`ems/`、`oms/` 里的通用代码不需要改动：没有任何地方再用 `exchange == "..."` 判断交易所。
 
 **为什么值得这么严：** `core/` 和 `models/` 不链接任何 JSON 库，所以热路径代码
 **在编译期就没有能力**误碰到 DOM 解析器。这不是靠代码规范，是靠链接失败。

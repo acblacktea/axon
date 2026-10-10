@@ -25,9 +25,9 @@
 
 #include "axon/models/order.h"
 #include "axon/net/crypto_lite.h"
-#include "axon/venue/binance/binance_builder.h"
-#include "axon/venue/bybit/bybit_builder.h"
-#include "axon/venue/okx/okx_builder.h"
+#include "axon/exchanges/binance/binance_builder.h"
+#include "axon/exchanges/bybit/bybit_builder.h"
+#include "axon/exchanges/okx/okx_builder.h"
 
 namespace {
 

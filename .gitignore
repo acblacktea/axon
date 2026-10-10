@@ -60,3 +60,7 @@ logs/
 Thumbs.db
 
 config.yaml
+# test/ end-to-end workspace: copied build outputs, logs, kill-switch file
+test/bin/
+test/logs/
+test/*.kill
