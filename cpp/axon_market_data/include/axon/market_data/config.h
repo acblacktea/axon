@@ -4,10 +4,10 @@
 #include <string>
 #include <vector>
 
-#include "logging.hpp"
-#include "models.hpp"
+#include "axon/market_data/logging.h"
+#include "axon/market_data/models.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 struct SubscriptionConfig {
     std::vector<std::string> depth;
@@ -48,4 +48,4 @@ struct AppConfig {
 
 AppConfig load_config(const std::string& path);
 
-} // namespace axon_market_data
+} // namespace axon::market_data

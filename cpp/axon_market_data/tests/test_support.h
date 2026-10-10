@@ -22,13 +22,13 @@
 #include <spdlog/sinks/ringbuffer_sink.h>
 #include <spdlog/spdlog.h>
 
-#include "axon_market_data/binance_adapter.hpp"
-#include "axon_market_data/bybit_adapter.hpp"
-#include "axon_market_data/hyperliquid_adapter.hpp"
-#include "axon_market_data/metrics.hpp"
-#include "axon_market_data/okx_adapter.hpp"
+#include "axon/market_data/binance_adapter.h"
+#include "axon/market_data/bybit_adapter.h"
+#include "axon/market_data/hyperliquid_adapter.h"
+#include "axon/market_data/metrics.h"
+#include "axon/market_data/okx_adapter.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 // Befriended by every adapter. The only window the tests have into adapter
 // internals; everything else goes through the public interface.
@@ -85,11 +85,11 @@ struct AdapterTestAccess {
     static bool fast_book(const HyperliquidAdapter& a) { return a.fast_book_; }
 };
 
-} // namespace axon_market_data
+} // namespace axon::market_data
 
 namespace mds_test {
 
-using namespace axon_market_data;
+using namespace axon::market_data;
 
 // ---------------------------------------------------------------------------
 // Events

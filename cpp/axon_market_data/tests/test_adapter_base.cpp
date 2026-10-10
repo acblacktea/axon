@@ -1,7 +1,7 @@
 // BaseAdapter behaviour shared by every venue: the one-shot "subscribed but
 // silent" check, and the per-topic bookkeeping behind it.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 namespace mds_test {
 namespace {

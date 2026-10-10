@@ -1,11 +1,11 @@
-#include "axon_market_data/websocket_client.hpp"
+#include "axon/market_data/websocket_client.h"
 
 #include <algorithm>
 #include <openssl/err.h>
 
-#include "axon_market_data/metrics.hpp"
+#include "axon/market_data/metrics.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 // ---------------------------------------------------------------------------
 // Ctor / Dtor
@@ -296,4 +296,4 @@ void WebSocketClient::notify_state(bool connected) {
     if (on_state_change_) on_state_change_(connected);
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

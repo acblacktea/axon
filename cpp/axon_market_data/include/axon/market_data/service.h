@@ -7,15 +7,15 @@
 #include <boost/asio.hpp>
 #include <spdlog/spdlog.h>
 
-#include "adapter.hpp"
-#include "binance_adapter.hpp"
-#include "bybit_adapter.hpp"
-#include "config.hpp"
-#include "hyperliquid_adapter.hpp"
-#include "okx_adapter.hpp"
-#include "zmq_publisher.hpp"
+#include "axon/market_data/adapter.h"
+#include "axon/market_data/binance_adapter.h"
+#include "axon/market_data/bybit_adapter.h"
+#include "axon/market_data/config.h"
+#include "axon/market_data/hyperliquid_adapter.h"
+#include "axon/market_data/okx_adapter.h"
+#include "axon/market_data/zmq_publisher.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 class Service {
 public:
@@ -39,4 +39,4 @@ private:
     bool                         running_ = false;
 };
 
-} // namespace axon_market_data
+} // namespace axon::market_data

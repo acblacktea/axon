@@ -1,7 +1,7 @@
 // Bybit V5 public streams: orderbook.{50,200,1000} depth, orderbook.1 as the
 // ticker source, and kline.1, for spot / linear / inverse.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 namespace mds_test {
 namespace {

@@ -1,10 +1,10 @@
-#include "axon_market_data/hyperliquid_adapter.hpp"
+#include "axon/market_data/hyperliquid_adapter.h"
 
-#include "axon_market_data/metrics.hpp"
+#include "axon/market_data/metrics.h"
 
 #include <algorithm>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 // ---------------------------------------------------------------------------
 // Ctor / Dtor
@@ -271,4 +271,4 @@ void HyperliquidAdapter::handle_candle(simdjson::ondemand::value data) {
     emit(DataType::Kline, coin, "update", std::move(kline));
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

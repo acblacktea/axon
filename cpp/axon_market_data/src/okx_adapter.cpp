@@ -1,11 +1,11 @@
-#include "axon_market_data/okx_adapter.hpp"
+#include "axon/market_data/okx_adapter.h"
 
 #include <algorithm>
 #include <array>
 
-#include "axon_market_data/metrics.hpp"
+#include "axon/market_data/metrics.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 // ---------------------------------------------------------------------------
 // CRC32 (IEEE) — OKX compares the result as a signed 32-bit integer
@@ -479,4 +479,4 @@ void OkxAdapter::handle_candle(simdjson::ondemand::document& doc,
     }
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

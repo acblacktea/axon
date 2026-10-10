@@ -1,7 +1,7 @@
 // The ZMQ PUB output: the [topic, json] framing subscribers depend on, topic
 // prefix filtering, and behaviour when nobody is draining.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 #include <atomic>
 
@@ -9,7 +9,7 @@
 #include <zmq.hpp>
 #include <zmq_addon.hpp>
 
-#include "axon_market_data/zmq_publisher.hpp"
+#include "axon/market_data/zmq_publisher.h"
 
 namespace mds_test {
 namespace {

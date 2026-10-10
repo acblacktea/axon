@@ -2,7 +2,7 @@
 // venue-timestamp rule the age metric relies on, and the JSON shape published
 // to subscribers.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 #include <glaze/glaze.hpp>
 

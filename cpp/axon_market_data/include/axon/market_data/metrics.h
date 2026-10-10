@@ -7,8 +7,8 @@
 #include <string>
 #include <string_view>
 
-#include "config.hpp"
-#include "models.hpp"
+#include "axon/market_data/config.h"
+#include "axon/market_data/models.h"
 
 // Only pointers to these are held here, so prometheus-cpp stays out of every
 // translation unit that reports. The backend can be swapped without touching
@@ -19,7 +19,7 @@ class Gauge;
 class Histogram;
 } // namespace prometheus
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 // Monotonic seconds. Prometheus histograms take seconds by convention, and a
 // steady clock is the only one that cannot jump backwards mid-measurement and
@@ -157,4 +157,4 @@ private:
 void init_metrics(const MetricsConfig& config);
 MetricsClient& get_metrics();
 
-} // namespace axon_market_data
+} // namespace axon::market_data

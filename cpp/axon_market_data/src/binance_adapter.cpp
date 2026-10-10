@@ -1,10 +1,10 @@
-#include "axon_market_data/binance_adapter.hpp"
+#include "axon/market_data/binance_adapter.h"
 
 #include <algorithm>
 
-#include "axon_market_data/metrics.hpp"
+#include "axon/market_data/metrics.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 // ---------------------------------------------------------------------------
 // Endpoint tables
@@ -62,7 +62,7 @@ BinanceAdapter::BinanceAdapter(net::io_context& ioc,
 {
     fetch_snapshot_ = [](std::string host,
                          std::string target) -> net::awaitable<HttpResponse> {
-        co_return co_await axon_market_data::http_get(host, target);
+        co_return co_await axon::market_data::http_get(host, target);
     };
 
     depth_levels_     = cfg_.depth_levels;
@@ -573,4 +573,4 @@ net::awaitable<void> BinanceAdapter::sync_orderbook(std::string exchange_symbol)
     }
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

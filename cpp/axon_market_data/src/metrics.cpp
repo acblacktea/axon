@@ -1,4 +1,4 @@
-#include "axon_market_data/metrics.hpp"
+#include "axon/market_data/metrics.h"
 
 #include <prometheus/counter.h>
 #include <prometheus/exposer.h>
@@ -11,7 +11,7 @@
 #include <map>
 #include <stdexcept>
 
-namespace axon_market_data {
+namespace axon::market_data {
 namespace {
 
 // Internal work: JSON parse, book update, serialize, ZMQ send. Tens of
@@ -345,4 +345,4 @@ MetricsClient& get_metrics() {
     return *slot;
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

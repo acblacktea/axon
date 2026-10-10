@@ -10,10 +10,10 @@
 
 #include <spdlog/spdlog.h>
 
-#include "metrics.hpp"
-#include "models.hpp"
+#include "axon/market_data/metrics.h"
+#include "axon/market_data/models.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 using EventCallback = std::function<void(const MarketDataEvent&)>;
 
@@ -155,4 +155,4 @@ protected:
     TopicSlot undeclared_;
 };
 
-} // namespace axon_market_data
+} // namespace axon::market_data

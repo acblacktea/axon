@@ -6,7 +6,7 @@
 
 #include <boost/asio.hpp>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 namespace net = boost::asio;
 
@@ -33,4 +33,4 @@ net::awaitable<HttpResponse> http_post(
     std::string body,
     const Headers& extra_headers = {});
 
-} // namespace axon_market_data
+} // namespace axon::market_data

@@ -1,11 +1,11 @@
-#include "axon_market_data/http_client.hpp"
+#include "axon/market_data/http_client.h"
 
 #include <boost/asio/ssl.hpp>
 #include <boost/beast.hpp>
 #include <boost/beast/ssl.hpp>
 #include <openssl/ssl.h>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 namespace beast = boost::beast;
 namespace ssl   = net::ssl;
@@ -113,4 +113,4 @@ net::awaitable<HttpResponse> http_post(
     co_return co_await do_request(host, std::move(req));
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

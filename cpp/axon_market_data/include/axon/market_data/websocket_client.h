@@ -12,7 +12,7 @@
 #include <boost/beast/ssl.hpp>
 #include <spdlog/spdlog.h>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 namespace net       = boost::asio;
 namespace beast     = boost::beast;
@@ -96,4 +96,4 @@ private:
     double                          session_start_ = 0.0;
 };
 
-} // namespace axon_market_data
+} // namespace axon::market_data

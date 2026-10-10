@@ -10,7 +10,7 @@
 
 #include <glaze/glaze.hpp>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 inline int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -254,17 +254,17 @@ inline int64_t venue_timestamp(const EventData& data) {
 // Glaze metadata for JSON serialization (ZMQ output)
 // ---------------------------------------------------------------------------
 
-} // namespace axon_market_data
+} // namespace axon::market_data
 
 template <>
-struct glz::meta<axon_market_data::PriceLevel> {
-    using T = axon_market_data::PriceLevel;
+struct glz::meta<axon::market_data::PriceLevel> {
+    using T = axon::market_data::PriceLevel;
     static constexpr auto value = object("price", &T::price, "quantity", &T::quantity);
 };
 
 template <>
-struct glz::meta<axon_market_data::OrderbookSnapshot> {
-    using T = axon_market_data::OrderbookSnapshot;
+struct glz::meta<axon::market_data::OrderbookSnapshot> {
+    using T = axon::market_data::OrderbookSnapshot;
     static constexpr auto value = object(
         "symbol", &T::symbol,
         "exchange", &T::exchange,
@@ -276,8 +276,8 @@ struct glz::meta<axon_market_data::OrderbookSnapshot> {
 };
 
 template <>
-struct glz::meta<axon_market_data::TickerData> {
-    using T = axon_market_data::TickerData;
+struct glz::meta<axon::market_data::TickerData> {
+    using T = axon::market_data::TickerData;
     static constexpr auto value = object(
         "symbol", &T::symbol,
         "exchange", &T::exchange,
@@ -290,8 +290,8 @@ struct glz::meta<axon_market_data::TickerData> {
 };
 
 template <>
-struct glz::meta<axon_market_data::KlineData> {
-    using T = axon_market_data::KlineData;
+struct glz::meta<axon::market_data::KlineData> {
+    using T = axon::market_data::KlineData;
     static constexpr auto value = object(
         "symbol", &T::symbol,
         "exchange", &T::exchange,

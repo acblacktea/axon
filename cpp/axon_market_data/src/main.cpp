@@ -3,10 +3,10 @@
 
 #include <spdlog/spdlog.h>
 
-#include "axon_market_data/config.hpp"
-#include "axon_market_data/logging.hpp"
-#include "axon_market_data/metrics.hpp"
-#include "axon_market_data/service.hpp"
+#include "axon/market_data/config.h"
+#include "axon/market_data/logging.h"
+#include "axon/market_data/metrics.h"
+#include "axon/market_data/service.h"
 
 int main(int argc, char* argv[]) {
     std::string config_path = "config.yml";
@@ -14,18 +14,18 @@ int main(int argc, char* argv[]) {
 
     // Bootstrap logger: the config names the real one, but load_config() can
     // throw before we get there.
-    auto logger = axon_market_data::make_logger({.file = "", .level = "info"});
+    auto logger = axon::market_data::make_logger({.file = "", .level = "info"});
 
     std::cout << "start" << std::endl;
     try {
-        auto cfg = axon_market_data::load_config(config_path);
+        auto cfg = axon::market_data::load_config(config_path);
 
         spdlog::drop("mds");
-        logger = axon_market_data::make_logger(cfg.logging);
+        logger = axon::market_data::make_logger(cfg.logging);
 
         // Before the adapters exist: their constructors declare every topic
         // they subscribe to, and those calls need a live registry.
-        axon_market_data::init_metrics(cfg.metrics);
+        axon::market_data::init_metrics(cfg.metrics);
 
         logger->info("Loaded config: {} exchange(s), pub={}",
                      cfg.exchanges.size(), cfg.pub_address);
@@ -37,13 +37,13 @@ int main(int argc, char* argv[]) {
                          cfg.logging.file, cfg.logging.max_files, cfg.logging.level);
         for (auto& ex : cfg.exchanges) {
             logger->info("  {} ({}) – depth:{} ticker:{} kline:{}",
-                         ex.name, axon_market_data::to_string(ex.market_type),
+                         ex.name, axon::market_data::to_string(ex.market_type),
                          ex.subscriptions.depth.size(),
                          ex.subscriptions.ticker.size(),
                          ex.subscriptions.kline.size());
         }
 
-        axon_market_data::Service service(cfg, logger);
+        axon::market_data::Service service(cfg, logger);
         service.run();
 
     } catch (const std::exception& e) {

@@ -6,9 +6,9 @@
 #include <zmq.hpp>
 #include <spdlog/spdlog.h>
 
-#include "models.hpp"
+#include "axon/market_data/models.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 class ZmqPublisher {
 public:
@@ -34,4 +34,4 @@ private:
     bool running_ = false;
 };
 
-} // namespace axon_market_data
+} // namespace axon::market_data

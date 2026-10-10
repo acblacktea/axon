@@ -1,12 +1,12 @@
 // Logging: daily file retention swept at startup, colourised level names in
 // the file, and level filtering.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 #include <filesystem>
 #include <fstream>
 
-#include "axon_market_data/logging.hpp"
+#include "axon/market_data/logging.h"
 
 namespace mds_test {
 namespace {

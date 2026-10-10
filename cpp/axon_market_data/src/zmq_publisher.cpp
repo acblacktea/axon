@@ -1,10 +1,10 @@
-#include "axon_market_data/zmq_publisher.hpp"
+#include "axon/market_data/zmq_publisher.h"
 
 #include <glaze/glaze.hpp>
 
-#include "axon_market_data/metrics.hpp"
+#include "axon/market_data/metrics.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 ZmqPublisher::ZmqPublisher(const std::string& address,
                            std::shared_ptr<spdlog::logger> logger)
@@ -82,4 +82,4 @@ void ZmqPublisher::publish(const MarketDataEvent& event) {
     }
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

@@ -1,7 +1,7 @@
 // OKX: books / books5 orderbooks with prevSeqId chaining and CRC32 checksums,
 // bbo-tbt tickers, and candle1m klines on a second (business) connection.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 namespace mds_test {
 namespace {

@@ -1,10 +1,10 @@
-#include "axon_market_data/config.hpp"
+#include "axon/market_data/config.h"
 
 #include <stdexcept>
 
 #include <yaml-cpp/yaml.h>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 static std::vector<std::string> read_string_list(const YAML::Node& node) {
     std::vector<std::string> out;
@@ -66,4 +66,4 @@ AppConfig load_config(const std::string& path) {
     return cfg;
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

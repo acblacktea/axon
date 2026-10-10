@@ -5,7 +5,7 @@
 
 #include <spdlog/spdlog.h>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 struct LogConfig {
     // Daily-rotated log file. spdlog appends the date to the stem, so
@@ -20,4 +20,4 @@ struct LogConfig {
 // Console + daily file, both with the level name colourised.
 std::shared_ptr<spdlog::logger> make_logger(const LogConfig& cfg);
 
-} // namespace axon_market_data
+} // namespace axon::market_data

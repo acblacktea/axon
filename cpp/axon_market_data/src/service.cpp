@@ -1,8 +1,8 @@
-#include "axon_market_data/service.hpp"
+#include "axon/market_data/service.h"
 
 #include <boost/asio/signal_set.hpp>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 Service::Service(const AppConfig& cfg, std::shared_ptr<spdlog::logger> logger)
     : cfg_(cfg)
@@ -79,4 +79,4 @@ void Service::on_event(const MarketDataEvent& event) {
     publisher_.publish(event);
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

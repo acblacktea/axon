@@ -1,11 +1,11 @@
 // config.yml loading: defaults, overrides, and the shipped example.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 #include <filesystem>
 #include <fstream>
 
-#include "axon_market_data/config.hpp"
+#include "axon/market_data/config.h"
 
 namespace mds_test {
 namespace {

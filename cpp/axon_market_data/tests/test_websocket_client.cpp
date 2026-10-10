@@ -5,8 +5,8 @@
 // Every adapter's stability rests on this class: if it fails to notice a dead
 // link or reconnects badly, every topic on that venue goes quiet at once.
 
-#include "test_support.hpp"
-#include "ws_test_server.hpp"
+#include "test_support.h"
+#include "ws_test_server.h"
 
 namespace mds_test {
 namespace {

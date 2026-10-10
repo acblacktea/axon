@@ -1,7 +1,7 @@
 // The metrics client: the hot-path topic handles, the age-sample rules, label
 // cardinality, the disabled no-op mode, and the endpoint's failure behaviour.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>

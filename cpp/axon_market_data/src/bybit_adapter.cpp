@@ -1,10 +1,10 @@
-#include "axon_market_data/bybit_adapter.hpp"
+#include "axon/market_data/bybit_adapter.h"
 
-#include "axon_market_data/metrics.hpp"
+#include "axon/market_data/metrics.h"
 
 #include <algorithm>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 // ---------------------------------------------------------------------------
 // Market type mapping (Bybit V5 categories)
@@ -323,4 +323,4 @@ void BybitAdapter::handle_kline(simdjson::ondemand::document& doc,
     }
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

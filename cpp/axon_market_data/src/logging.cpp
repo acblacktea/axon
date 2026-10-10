@@ -1,4 +1,4 @@
-#include "axon_market_data/logging.hpp"
+#include "axon/market_data/logging.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -9,7 +9,7 @@
 #include <spdlog/sinks/daily_file_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 namespace {
 
@@ -126,4 +126,4 @@ std::shared_ptr<spdlog::logger> make_logger(const LogConfig& cfg) {
     return logger;
 }
 
-} // namespace axon_market_data
+} // namespace axon::market_data

@@ -10,12 +10,12 @@
 #include <simdjson.h>
 #include <spdlog/spdlog.h>
 
-#include "adapter.hpp"
-#include "config.hpp"
-#include "models.hpp"
-#include "websocket_client.hpp"
+#include "axon/market_data/adapter.h"
+#include "axon/market_data/config.h"
+#include "axon/market_data/models.h"
+#include "axon/market_data/websocket_client.h"
 
-namespace axon_market_data {
+namespace axon::market_data {
 
 namespace net = boost::asio;
 
@@ -79,4 +79,4 @@ private:
     static constexpr size_t SLOW_LEVELS = 20;
 };
 
-} // namespace axon_market_data
+} // namespace axon::market_data

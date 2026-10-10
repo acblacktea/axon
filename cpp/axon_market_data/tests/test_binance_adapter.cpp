@@ -6,7 +6,7 @@
 // chains on without a hole -- with a join rule that differs between spot and
 // futures. Each rule below is a way the book silently goes wrong if broken.
 
-#include "test_support.hpp"
+#include "test_support.h"
 
 #include <deque>
 
