@@ -1,12 +1,17 @@
 # Axon
 
+> The Python implementations under `python_deprecated/` are deprecated and no
+> longer maintained; the C++ services under `cpp/` are the ones in use. The
+> Python order-execution code is kept only so `python_wire_compat` can keep
+> checking that the C++ engine stays wire-compatible with Python strategy clients.
+
 Crypto trading infrastructure. Two services, each implemented twice — a
 production Python implementation and a low-latency C++ port.
 
 | Service | Python | C++ |
 |---|---|---|
-| **Order execution** (EMS + OMS) | [python/axon_order_execution/](python/axon_order_execution/) | [cpp/axon_order_execution/](cpp/axon_order_execution/) |
-| **Market data** (MDS) | [python/axon_market_data/](python/axon_market_data/) | [cpp/axon_market_data/](cpp/axon_market_data/) |
+| **Order execution** (EMS + OMS) | [python_deprecated/axon_order_execution/](python_deprecated/axon_order_execution/) | [cpp/axon_order_execution/](cpp/axon_order_execution/) |
+| **Market data** (MDS) | [python_deprecated/axon_market_data/](python_deprecated/axon_market_data/) | [cpp/axon_market_data/](cpp/axon_market_data/) |
 
 ---
 
@@ -107,7 +112,7 @@ market data service takes its own `config.yml`.
 ### Order execution — Python
 
 ```bash
-cd python/axon_order_execution
+cd python_deprecated/axon_order_execution
 
 # terminal 1: the engine
 python -m axon_order_execution.engine --config ../../config.yaml
@@ -169,7 +174,7 @@ ctest --test-dir build
 ### Market data — Python
 
 ```bash
-cd python/axon_market_data
+cd python_deprecated/axon_market_data
 pip install -r requirements.txt
 python examples/run_server.py          # reads examples/config.yml
 ```

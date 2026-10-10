@@ -83,9 +83,9 @@ target_link_libraries(axon_wire_fixtures PRIVATE axon::transport)
 
 # Each service lives at <language>/<service>/ in one repo. This file is
 # cpp/axon_order_execution/tests/, so the matching Python project root is
-# ../../../python/axon_order_execution. Allow an override for anyone
+# ../../../python_deprecated/axon_order_execution. Allow an override for anyone
 # building the C++ tree standalone.
-set(AXON_PYTHON_PROJECT "${CMAKE_CURRENT_SOURCE_DIR}/../../../python/axon_order_execution"
+set(AXON_PYTHON_PROJECT "${CMAKE_CURRENT_SOURCE_DIR}/../../../python_deprecated/axon_order_execution"
     CACHE PATH "Root of the Python implementation, used by python_wire_compat")
 
 # Probe for the module this test actually imports rather than for the directory.

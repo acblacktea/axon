@@ -9,7 +9,7 @@
 ## 一、这是什么
 
 一个**加密期权 / 永续合约的订单执行引擎**，C++20 实现，是同仓库那份
-[Python 引擎](../../python/axon_order_execution/)的低延迟移植版。
+[Python 引擎](../../python_deprecated/axon_order_execution/)的低延迟移植版。
 
 它做三件事：
 

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from setuptools import setup, find_packages
 
-# The README lives at the repo root (python/axon_order_execution/ -> up 3),
+# The README lives at the repo root (python_deprecated/axon_order_execution/ -> up 3),
 # because it documents both the Python and the C++ implementation.
 _README = Path(__file__).resolve().parents[2] / "README.md"
 

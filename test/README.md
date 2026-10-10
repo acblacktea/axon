@@ -54,7 +54,7 @@ source ~/.config/axon/binance-testnet.env
 | | 地址 | 协议 |
 |---|---|---|
 | 行情 | `tcp://127.0.0.1:5558`（ZMQ SUB） | 两帧 `[topic, json]`，topic 为 `{exchange}.{data_type}.{symbol}`，例如 `binance_usdt_futures.ticker.BTC_USDT_PERP` |
-| 下单 / 查询 | `tcp://127.0.0.1:5555`（ZMQ DEALER） | C++ 用 `axon::client::StrategyClient`，Python 用 `python/axon_order_execution/axon_order_execution/client/strategy_client.py` |
+| 下单 / 查询 | `tcp://127.0.0.1:5555`（ZMQ DEALER） | C++ 用 `axon::client::StrategyClient`，Python 用 `python_deprecated/axon_order_execution/axon_order_execution/client/strategy_client.py` |
 | 订单 / 成交回报 | `tcp://127.0.0.1:5556`（ZMQ SUB） | 按 strategy_id 订阅 |
 
 C++ 策略下单用 `StrategyClient::submit_order()`，它会区分三种结果：

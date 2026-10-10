@@ -1,11 +1,11 @@
 # axon_order_execution_cpp
 
-[Python 引擎](../../python/axon_order_execution/)的低延迟 C++ 移植版，和它住在同一个仓库里：
+[Python 引擎](../../python_deprecated/axon_order_execution/)的低延迟 C++ 移植版，和它住在同一个仓库里：
 
 ```
 axon/                                <- 仓库根
-├── python/
-│   └── axon_order_execution/        Python 实现（未改动）
+├── python_deprecated/
+│   └── axon_order_execution/        Python 实现（已弃用，不再维护）
 └── cpp/
     └── axon_order_execution/        本项目
 ```
