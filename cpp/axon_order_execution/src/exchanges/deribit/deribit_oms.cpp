@@ -1,10 +1,10 @@
-// Deribit: everything the OMS needs from this venue.
+// Deribit: everything the OMS needs from this exchange.
 //
 // Deribit options: one JSON-RPC connection carries the feed AND order entry,
 // authenticated once with client credentials.
 //
-// Moved out of venue_session.cpp and venue_rest.cpp so each venue's
-// protocol lives in one place, as it does on the EMS side. Only venue() is
+// Moved out of exchange_session.cpp and exchange_rest.cpp so each exchange's
+// protocol lives in one place, as it does on the EMS side. Only oms_exchange() is
 // visible outside this file.
 
 #include "axon/exchanges/deribit/deribit_oms.h"
@@ -23,9 +23,11 @@
 #include "axon/exchanges/deribit/deribit_builder.h"
 #include "axon/exchanges/deribit/deribit_parser.h"
 #include "axon/exchanges/deribit/deribit_protocol.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
-namespace axon::oms::deribit {
+namespace axon::exchanges::deribit {
+
+using namespace axon::oms;
 namespace {
 
 auto& log() {
@@ -33,15 +35,15 @@ auto& log() {
   return logger;
 }
 
-using detail::doc;
-using detail::first_of_array_at;
-using detail::http_error;
-using detail::monotonic_seconds;
-using detail::now_ms;
-using detail::parse_array_at;
-using detail::parse_object_at;
-using detail::parse_string_id;
-using detail::url_encode;
+using oms::detail::doc;
+using oms::detail::first_of_array_at;
+using oms::detail::http_error;
+using oms::detail::monotonic_seconds;
+using oms::detail::now_ms;
+using oms::detail::parse_array_at;
+using oms::detail::parse_object_at;
+using oms::detail::parse_string_id;
+using oms::detail::url_encode;
 
 // ===========================================================================
 // The private feed session
@@ -50,26 +52,26 @@ using detail::url_encode;
 // Deribit
 // ===========================================================================
 
-class DeribitSession final : public VenueSession {
+class DeribitSession final : public ExchangeSession {
  public:
-  using VenueSession::VenueSession;
+  using ExchangeSession::ExchangeSession;
 
  protected:
   std::string host() const override {
-    return std::string(exchange_.is_testnet() ? venue::deribit::kTestnetHost
-                                              : venue::deribit::kProductionHost);
+    return std::string(exchange_.is_testnet() ? exchanges::deribit::kTestnetHost
+                                              : exchanges::deribit::kProductionHost);
   }
-  std::string path() const override { return std::string(venue::deribit::kPath); }
+  std::string path() const override { return std::string(exchanges::deribit::kPath); }
 
   bool send_authentication() override {
-    char buf[venue::deribit::kMaxRequestBytes];
+    char buf[exchanges::deribit::kMaxRequestBytes];
     const std::size_t n = builder_.authenticate(buf, sizeof(buf), exchange_.api_key,
                                                 exchange_.api_secret, auth_id_);
     return n > 0 && send_raw(std::string_view(buf, n));
   }
 
   bool send_subscriptions() override {
-    char buf[venue::deribit::kMaxRequestBytes];
+    char buf[exchanges::deribit::kMaxRequestBytes];
     std::int64_t id = 0;
 
     // Heartbeat first: Deribit will not send test_requests until asked, and
@@ -81,8 +83,8 @@ class DeribitSession final : public VenueSession {
     }
 
     std::vector<std::string> channel_storage{
-        std::string(venue::deribit::kAllOrdersChannel),
-        std::string(venue::deribit::kAllTradesChannel)};
+        std::string(exchanges::deribit::kAllOrdersChannel),
+        std::string(exchanges::deribit::kAllTradesChannel)};
     for (const auto& currency : currencies_) {
       channel_storage.push_back("user.portfolio." + currency);
     }
@@ -104,16 +106,16 @@ class DeribitSession final : public VenueSession {
                                       capacity, sink);
 
     switch (result.kind) {
-      case venue::VenueMessageKind::kHeartbeatTestRequest: {
+      case exchanges::ExchangeMessageKind::kHeartbeatTestRequest: {
         // Deribit drops the connection if this goes unanswered, so it is
         // answered here rather than queued behind anything else.
-        char buf[venue::deribit::kMaxRequestBytes];
+        char buf[exchanges::deribit::kMaxRequestBytes];
         const std::size_t n =
-            venue::deribit::DeribitBuilder::test_response(buf, sizeof(buf));
+            exchanges::deribit::DeribitBuilder::test_response(buf, sizeof(buf));
         send_raw(std::string_view(buf, n));
         break;
       }
-      case venue::VenueMessageKind::kRpcResult:
+      case exchanges::ExchangeMessageKind::kRpcResult:
         if (result.rpc_id == auth_id_) {
           on_auth_reply(true, {});
         } else if (result.rpc_id == subscribe_id_) {
@@ -126,7 +128,7 @@ class DeribitSession final : public VenueSession {
                                  {});
         }
         break;
-      case venue::VenueMessageKind::kRpcError:
+      case exchanges::ExchangeMessageKind::kRpcError:
         if (result.rpc_id == auth_id_) {
           on_auth_reply(false, std::string(result.rpc_error_text));
         } else if (result.rpc_id == subscribe_id_) {
@@ -137,7 +139,7 @@ class DeribitSession final : public VenueSession {
                                  result.rpc_error_text);
         }
         break;
-      case venue::VenueMessageKind::kParseError:
+      case exchanges::ExchangeMessageKind::kParseError:
         // A single malformed frame is not worth dropping a session over.
         AXON_LOG_WARN(log(), "[deribit] parse error: {}",
                         result.error != nullptr ? result.error : "?");
@@ -172,8 +174,8 @@ class DeribitSession final : public VenueSession {
     }
   };
 
-  venue::deribit::DeribitParser parser_;
-  venue::deribit::DeribitBuilder builder_;
+  exchanges::deribit::DeribitParser parser_;
+  exchanges::deribit::DeribitBuilder builder_;
   std::int64_t auth_id_ = -1;
   std::int64_t subscribe_id_ = -1;
   std::vector<std::string> currencies_{"BTC"};
@@ -185,10 +187,10 @@ class DeribitSession final : public VenueSession {
 // ===========================================================================
 // Deribit
 // ===========================================================================
-class DeribitRestImpl final : public VenueRest {
+class DeribitRestImpl final : public ExchangeRest {
  public:
-  DeribitRestImpl(ExchangeConfig exchange, net::HttpClient* http)
-      : exchange_(std::move(exchange)), http_(http) {
+  DeribitRestImpl(ExchangeConfig exchange_config, net::HttpClient* http)
+      : exchange_(std::move(exchange_config)), http_(http) {
     // Deribit accepts HTTP Basic, which avoids the token lifecycle entirely.
     basic_ = "Basic " + net::base64_encode(exchange_.api_key + ":" +
                                            exchange_.api_secret);
@@ -264,9 +266,9 @@ class DeribitRestImpl final : public VenueRest {
   }
 
  private:
-  static std::optional<models::Order> parse_order(venue::Object& d);
-  static std::optional<models::Fill> parse_fill(venue::Object& d);
-  static std::optional<models::Position> parse_position(venue::Object& d);
+  static std::optional<models::Order> parse_order(exchanges::Object& d);
+  static std::optional<models::Fill> parse_fill(exchanges::Object& d);
+  static std::optional<models::Position> parse_position(exchanges::Object& d);
 
   void send(const std::string& path, bool authenticated, const std::string& method,
             const std::string& body,
@@ -279,8 +281,8 @@ class DeribitRestImpl final : public VenueRest {
     }
     net::HttpRequest req;
     req.method = method;
-    req.host = std::string(exchange_.is_testnet() ? venue::deribit::kTestnetHost
-                                                  : venue::deribit::kProductionHost);
+    req.host = std::string(exchange_.is_testnet() ? exchanges::deribit::kTestnetHost
+                                                  : exchanges::deribit::kProductionHost);
     req.path = path;
     req.body = body;
     if (authenticated) {
@@ -294,7 +296,7 @@ class DeribitRestImpl final : public VenueRest {
   std::string basic_;
 };
 
-std::optional<models::Order> DeribitRestImpl::parse_order(venue::Object& d) {
+std::optional<models::Order> DeribitRestImpl::parse_order(exchanges::Object& d) {
   models::Order o;
   o.exchange = "deribit";
   const auto id = d["order_id"].as_string();
@@ -305,17 +307,17 @@ std::optional<models::Order> DeribitRestImpl::parse_order(venue::Object& d) {
   }
   o.order_id = std::string(*id);
   o.instrument = std::string(*inst);
-  o.side = venue::deribit::map_direction(*dir);
+  o.side = exchanges::deribit::map_direction(*dir);
   o.order_type =
-      venue::deribit::map_order_type(d["order_type"].as_string().value_or("limit"));
+      exchanges::deribit::map_order_type(d["order_type"].as_string().value_or("limit"));
   o.amount = d["amount"].as_decimal().value_or(core::Qty{});
   o.filled_amount = d["filled_amount"].as_decimal().value_or(core::Qty{});
   o.price = d["price"].as_decimal();
   o.average_price = d["average_price"].as_decimal();
   const auto mapping =
-      venue::deribit::map_order_state(d["order_state"].as_string().value_or("open"));
+      exchanges::deribit::map_order_state(d["order_state"].as_string().value_or("open"));
   o.status =
-      venue::deribit::refine_with_fill(mapping.status, o.filled_amount.raw() > 0);
+      exchanges::deribit::refine_with_fill(mapping.status, o.filled_amount.raw() > 0);
   const auto created = d["creation_timestamp"].as_int();
   const auto updated = d["last_update_timestamp"].as_int();
   o.created_at = core::Timestamp::from_millis(created.value_or(0));
@@ -329,7 +331,7 @@ std::optional<models::Order> DeribitRestImpl::parse_order(venue::Object& d) {
   return o;
 }
 
-std::optional<models::Fill> DeribitRestImpl::parse_fill(venue::Object& d) {
+std::optional<models::Fill> DeribitRestImpl::parse_fill(exchanges::Object& d) {
   models::Fill f;
   f.exchange = "deribit";
   const auto tid = d["trade_id"].as_string();
@@ -342,17 +344,17 @@ std::optional<models::Fill> DeribitRestImpl::parse_fill(venue::Object& d) {
   f.trade_id = std::string(*tid);
   f.order_id = std::string(*oid);
   f.instrument = std::string(*inst);
-  f.side = venue::deribit::map_direction(*dir);
+  f.side = exchanges::deribit::map_direction(*dir);
   f.amount = d["amount"].as_decimal().value_or(core::Qty{});
   f.price = d["price"].as_decimal().value_or(core::Price{});
   f.fee = d["fee"].as_decimal().value_or(core::Price{});
   f.fee_currency = std::string(d["fee_currency"].as_string().value_or(""));
-  f.liquidity = venue::deribit::map_liquidity(d["liquidity"].as_string().value_or("M"));
+  f.liquidity = exchanges::deribit::map_liquidity(d["liquidity"].as_string().value_or("M"));
   f.timestamp = core::Timestamp::from_millis(d["timestamp"].as_int().value_or(0));
   return f;
 }
 
-std::optional<models::Position> DeribitRestImpl::parse_position(venue::Object& d) {
+std::optional<models::Position> DeribitRestImpl::parse_position(exchanges::Object& d) {
   models::Position p;
   p.exchange = "deribit";
   const auto inst = d["instrument_name"].as_string();
@@ -372,29 +374,30 @@ std::optional<models::Position> DeribitRestImpl::parse_position(venue::Object& d
   return p;
 }
 
-std::unique_ptr<VenueSession> make_session(const ExchangeConfig& exchange,
+std::unique_ptr<ExchangeSession> make_session(const ExchangeConfig& exchange_config,
                                            const WebSocketConfig& ws_config,
                                            const RuntimeConfig& runtime,
-                                           const net::TlsContext* tls, VenueRest*,
-                                           VenueSessionHandlers handlers) {
-  return std::make_unique<DeribitSession>(exchange, ws_config, runtime, tls,
+                                           const net::TlsContext* tls, ExchangeRest*,
+                                           ExchangeSessionHandlers handlers) {
+  return std::make_unique<DeribitSession>(exchange_config, ws_config, runtime, tls,
                                                   std::move(handlers));
 }
 
-std::unique_ptr<VenueRest> make_rest(const ExchangeConfig& exchange, net::HttpClient* http) {
-  return std::make_unique<DeribitRestImpl>(exchange, http);
+std::unique_ptr<ExchangeRest> make_rest(const ExchangeConfig& exchange_config,
+                                        net::HttpClient* http) {
+  return std::make_unique<DeribitRestImpl>(exchange_config, http);
 }
 
 }  // namespace
 
-const OmsVenue& venue() {
-  static const OmsVenue kVenue{
+const OmsExchange& oms_exchange() {
+  static const OmsExchange kExchange{
       "deribit",
       make_session,
       nullptr,  // no order-entry session: orders ride the feed session
       make_rest,
   };
-  return kVenue;
+  return kExchange;
 }
 
-}  // namespace axon::oms::deribit
+}  // namespace axon::exchanges::deribit

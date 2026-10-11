@@ -3,12 +3,14 @@
 #include <string>
 
 #include "axon/exchanges/binance/binance_parser.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
-namespace axon::ems::binance {
+namespace axon::exchanges::binance {
+
+using namespace axon::ems;
 namespace {
 
-// Binance is the only venue with no session login: every request carries its
+// Binance is the only exchange with no session login: every request carries its
 // own apiKey and signature, so a missing credential is not a configuration
 // warning here, it is an unbuildable request.
 std::size_t build_place(char* buf, std::size_t cap,
@@ -55,15 +57,15 @@ std::size_t build_modify(char* buf, std::size_t cap,
                                    ctx.now_ms, id);
 }
 
-// ws-fapi answers order.place with the order as the venue recorded it:
+// ws-fapi answers order.place with the order as the exchange recorded it:
 //   {"id":"7","status":200,"result":{"orderId":..,"symbol":..,"status":"NEW",
 //    "clientOrderId":..,"price":..,"origQty":..,"executedQty":..,"avgPrice":..,
 //    "type":..,"side":..,"updateTime":..},"rateLimits":[..]}
-// Returning it is what gives a strategy the venue order id for what it just
+// Returning it is what gives a strategy the exchange order id for what it just
 // placed. The feed still carries the authoritative state afterwards; a reply
 // that cannot be read is accepted without an order, as before.
 OrderResult interpret_reply(std::string_view payload, const models::OrderRequest& request,
-                            VenueState& state) {
+                            ExchangeState& state) {
   auto root = state.reply_doc.parse_copy(payload);
   auto result = root.has_value() ? (*root)["result"].as_object() : std::nullopt;
   if (!result.has_value()) {
@@ -80,7 +82,7 @@ OrderResult interpret_reply(std::string_view payload, const models::OrderRequest
   o.order_id = std::to_string(*order_id);
   o.exchange = "binance";
   o.instrument = std::string(*symbol);
-  o.status = venue::binance::map_order_status(r["status"].as_string().value_or("NEW")).status;
+  o.status = exchanges::binance::map_order_status(r["status"].as_string().value_or("NEW")).status;
   const auto price = r["price"].as_decimal();
   if (price.has_value() && !price->is_zero()) {
     o.price = price;
@@ -105,8 +107,8 @@ OrderResult interpret_reply(std::string_view payload, const models::OrderRequest
 
 }  // namespace
 
-const VenueOps& ops() {
-  static const VenueOps kOps{
+const ExchangeOps& ems_ops() {
+  static const ExchangeOps kOps{
       "binance",
       /*own_trade_connection=*/true,  // ws-fapi, no session login
       /*needs_symbol=*/true,
@@ -115,4 +117,4 @@ const VenueOps& ops() {
   return kOps;
 }
 
-}  // namespace axon::ems::binance
+}  // namespace axon::exchanges::binance

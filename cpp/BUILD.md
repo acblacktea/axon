@@ -92,7 +92,7 @@ cmake --build build-native -j$(nproc)
 
 ### 4.2 LTO：链接时跨文件优化
 
-允许编译器跨源文件内联，比如把 venue 解析器、OrderStore、EMS 之间的调用内联掉。代价是编译变慢。
+允许编译器跨源文件内联，比如把 exchange 解析器、OrderStore、EMS 之间的调用内联掉。代价是编译变慢。
 
 ```bash
 # 在上面任意一条 cmake 配置命令后面加：

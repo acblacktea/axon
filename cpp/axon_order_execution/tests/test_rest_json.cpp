@@ -1,7 +1,7 @@
 // REST snapshot parsing, without a network.
 //
 // Every reconciler reads its snapshot through parse_array_at. Binance returns
-// a bare top-level array; the other venues wrap theirs in an object. Until
+// a bare top-level array; the other exchanges wrap theirs in an object. Until
 // this file existed nothing exercised the bare-array path, and it had never
 // worked: every Binance openOrders / positionRisk / userTrades reply came back
 // as "malformed response", so Binance reconciliation silently did nothing.
@@ -28,7 +28,7 @@ HttpResponse ok(std::string body) {
   return r;
 }
 
-std::optional<std::int64_t> parse_id(axon::venue::Object& o) { return o["id"].as_int(); }
+std::optional<std::int64_t> parse_id(axon::exchanges::Object& o) { return o["id"].as_int(); }
 
 struct Result {
   std::vector<std::int64_t> items;

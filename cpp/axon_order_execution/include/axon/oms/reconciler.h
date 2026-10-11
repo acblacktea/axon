@@ -4,7 +4,7 @@
 // WHAT RECONCILIATION IS FOR, and it is not what it looks like. The WebSocket
 // feed is the fast path and is supposed to be complete. Reconciliation is the
 // backstop for when it is not: a message lost during a reconnect, a fill that
-// arrived while the socket was down, an order the venue closed without telling
+// arrived while the socket was down, an order the exchange closed without telling
 // us. Every correction it makes is EVIDENCE THE FEED DROPPED SOMETHING, which
 // is why each one is logged loudly and counted -- a reconciler quietly fixing
 // things every cycle means the feed is broken, not that reconciliation works.
@@ -12,8 +12,8 @@
 // It runs on the engine thread, off timers, using the async HTTP client. A
 // snapshot in flight never blocks the feed.
 //
-// SCOPE: all four venues, through the VenueRest interface. Each signs its own
-// requests differently; see venue_rest.h.
+// SCOPE: all four exchanges, through the ExchangeRest interface. Each signs its own
+// requests differently; see exchange_rest.h.
 //
 // ONE CAVEAT that is real and not papered over: Binance's userTrades endpoint
 // is SYMBOL-scoped, not currency-scoped, so its fill reconciliation only
@@ -36,7 +36,7 @@
 #include "axon/models/portfolio.h"
 #include "axon/net/http_client.h"
 #include "axon/oms/order_store.h"
-#include "axon/oms/venue_rest.h"
+#include "axon/oms/exchange_rest.h"
 
 namespace axon::oms {
 
@@ -47,10 +47,10 @@ struct ReconcilerCallbacks {
 
 class Reconciler {
  public:
-  // `rest` must outlive the reconciler; the engine owns one per venue and
+  // `rest` must outlive the reconciler; the engine owns one per exchange and
   // shares it with the EMS so cancel/amend and the snapshots use the same
   // connections.
-  Reconciler(const Config& config, ExchangeConfig exchange, VenueRest* rest,
+  Reconciler(const Config& config, ExchangeConfig exchange_config, ExchangeRest* rest,
              OrderStore* orders, ReconcilerCallbacks callbacks);
 
   // Fires whichever timers are due. Never blocks.
@@ -62,7 +62,7 @@ class Reconciler {
   void on_session_live();
 
   // Trade ids already seen, so a recovered fill is not double-counted. The
-  // venue's trade_id is the idempotency key; this is the same dedup the fill
+  // exchange's trade_id is the idempotency key; this is the same dedup the fill
   // repository does, kept in memory so the check costs nothing.
   bool have_seen_fill(const std::string& trade_id) const;
   void note_fill(const std::string& trade_id);
@@ -82,7 +82,7 @@ class Reconciler {
  private:
   void run_order_pass();
   // Second half of an order pass: every order still active locally that the
-  // venue's open-orders snapshot did not list has closed without the feed
+  // exchange's open-orders snapshot did not list has closed without the feed
   // telling us. Each is looked up individually for its FINAL state -- filled
   // and cancelled are not interchangeable -- exactly as the Python
   // OrderReconciler does.
@@ -93,14 +93,14 @@ class Reconciler {
 
   Config config_;
   ExchangeConfig exchange_;
-  VenueRest* rest_ = nullptr;
+  ExchangeRest* rest_ = nullptr;
   OrderStore* orders_ = nullptr;
   ReconcilerCallbacks callbacks_;
 
   double next_order_pass_ = 0.0;
   double next_fill_pass_ = 0.0;
   double next_position_pass_ = 0.0;
-  // Only one pass of each kind in flight; a slow venue must not queue up
+  // Only one pass of each kind in flight; a slow exchange must not queue up
   // overlapping snapshots that then apply out of order.
   bool order_pass_in_flight_ = false;
   // An order pass fans out one open-orders call per configured currency.
@@ -110,7 +110,7 @@ class Reconciler {
   bool order_pass_failed_ = false;
   std::unordered_set<std::string> open_order_ids_;
   std::size_t order_lookups_outstanding_ = 0;
-  // Bounds the single-order lookups one pass may issue. A venue answering
+  // Bounds the single-order lookups one pass may issue. An exchange answering
   // with a truncated snapshot would otherwise turn every local order into a
   // signed request at once -- which is how an IP gets rate-limit banned.
   static constexpr std::size_t kMaxOrderLookupsPerPass = 20;

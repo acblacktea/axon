@@ -18,7 +18,7 @@
 namespace axon::risk {
 
 // Keeps a RiskManager current from what the OMS publishes. Order changes
-// from reconciliation count too -- an order the venue closed while the feed
+// from reconciliation count too -- an order the exchange closed while the feed
 // was down must leave the working-order book, or its exposure lingers.
 class RiskFeed final : public oms::OmsListener {
  public:

@@ -46,7 +46,7 @@ inline Sha1Digest sha1(std::string_view s) noexcept {
 // against the published FIPS 180-4 and RFC 4231 vectors.
 //
 // Still local rather than OpenSSL, for the same reason as SHA-1: they run once
-// per connection, and keeping the venue layer free of a crypto library keeps
+// per connection, and keeping the exchange layer free of a crypto library keeps
 // it trivially buildable and testable. When TLS arrives it brings OpenSSL, and
 // switching to EVP_MAC then is a one-file change.
 Sha256Digest sha256(const void* data, std::size_t len) noexcept;

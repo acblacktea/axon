@@ -119,31 +119,32 @@ add_library(axon::net ALIAS axon_net)
 target_link_libraries(axon_net PUBLIC axon_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
 # ---------------------------------------------------------------------------
-# axon_venue -- per-exchange protocol.
+# axon_exchanges -- per-exchange protocol.
 #
 # Inbound parsing (simdjson On-Demand) and outbound message construction (byte
 # templates, no JSON library). This is the only place simdjson appears; the
-# venue parsers are the only hot-path JSON in the system.
+# exchange parsers are the only hot-path JSON in the system.
 #
 # Depends on axon_models for the domain enums and on axon_transport for the
-# fixed-layout hot messages the parsers emit. It does NOT depend on axon_net:
-# a venue parser transforms bytes to messages and has no idea they arrived over
-# a WebSocket, which is what makes it testable against captured payloads.
+# fixed-layout hot messages the parsers emit. It links axon_net only for its
+# crypto (see below), never its sockets: an exchange parser transforms bytes to
+# messages and has no idea they arrived over a WebSocket, which is what makes
+# it testable against captured payloads.
 # ---------------------------------------------------------------------------
-add_library(axon_venue
-  src/venue/json_writer.cpp
+add_library(axon_exchanges
+  src/exchanges/common/json_writer.cpp
   src/exchanges/deribit/deribit_builder.cpp
   src/exchanges/binance/binance_builder.cpp
   src/exchanges/bybit/bybit_builder.cpp
   src/exchanges/okx/okx_builder.cpp
 )
-add_library(axon::venue ALIAS axon_venue)
+add_library(axon::exchanges ALIAS axon_exchanges)
 # axon_net is needed for HMAC-SHA256 and base64: Bybit and OKX sign their
-# WebSocket logins, and all three perp venues sign their REST requests.
-target_link_libraries(axon_venue PUBLIC axon_transport axon_simdjson axon_net)
+# WebSocket logins, and all three perp exchanges sign their REST requests.
+target_link_libraries(axon_exchanges PUBLIC axon_transport axon_simdjson axon_net)
 
 # ---------------------------------------------------------------------------
-# axon_app -- config, logging, metrics, order state, venue sessions and the
+# axon_app -- config, logging, metrics, order state, exchange sessions and the
 # ZMQ control plane. Everything above the protocol layers.
 #
 # This is where the third-party surface widens: yaml-cpp, spdlog,
@@ -180,7 +181,7 @@ add_library(axon_app
   src/util/logging.cpp
   src/util/metrics.cpp
   src/ems/ems_service.cpp
-  src/ems/venue_ops.cpp
+  src/ems/exchange_ops.cpp
   src/exchanges/deribit/deribit_ems.cpp
   src/exchanges/okx/okx_ems.cpp
   src/exchanges/bybit/bybit_ems.cpp
@@ -188,7 +189,7 @@ add_library(axon_app
   src/repository/postgres.cpp
   src/client/strategy_client.cpp
   src/oms/oms_service.cpp
-  src/oms/oms_venue.cpp
+  src/oms/oms_exchange.cpp
   src/exchanges/binance/binance_oms.cpp
   src/exchanges/bybit/bybit_oms.cpp
   src/exchanges/deribit/deribit_oms.cpp
@@ -196,16 +197,16 @@ add_library(axon_app
   src/oms/order_store.cpp
   src/oms/portfolio_store.cpp
   src/oms/reconciler.cpp
-  src/oms/venue_rest.cpp
-  src/oms/venue_connections.cpp
-  src/oms/venue_session.cpp
+  src/oms/exchange_rest.cpp
+  src/oms/exchange_connections.cpp
+  src/oms/exchange_session.cpp
   src/risk/risk_manager.cpp
   src/transport/shm_bridge.cpp
   src/transport/zmq_server.cpp
 )
 add_library(axon::app ALIAS axon_app)
 target_link_libraries(axon_app
-  PUBLIC axon_venue axon_net spdlog::spdlog
+  PUBLIC axon_exchanges axon_net spdlog::spdlog
   PRIVATE yaml-cpp::yaml-cpp prometheus-cpp::pull cppzmq libpqxx::pqxx
 )
 

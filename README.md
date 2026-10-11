@@ -46,22 +46,22 @@ they share a host with the engine.
 One single-threaded, busy-polling process owns every exchange connection and
 all order state. It is built from three independent modules:
 
-- **EMS** (`ems/`) sends orders. Each venue gets a function table
-  (`VenueOps`) that builds requests and interprets replies. Every order goes out
+- **EMS** (`ems/`) sends orders. Each exchange gets a function table
+  (`ExchangeOps`) that builds requests and interprets replies. Every order goes out
   with a client order id (the strategy's label, or the engine's
-  `internal_order_id`). The venue echoes that id back, which is how a placement
+  `internal_order_id`). The exchange echoes that id back, which is how a placement
   whose reply was lost still gets resolved. A send with no verdict is reported
   as `OUTCOME_UNKNOWN`, never as a failure. A strategy's natural reaction to a
   failure is to retry, and if the first order actually went through, that retry
   doubles the position. A duplicate guard on `internal_order_id` refuses
   resubmissions.
 - **OMS** (`oms/`) is the source of truth. It keeps the order, fill and
-  portfolio stores up to date from the venues' WebSocket feeds, de-duplicates
+  portfolio stores up to date from the exchanges' WebSocket feeds, de-duplicates
   fills, persists to Postgres when configured, and reconciles periodically
   against REST snapshots. Reconciliation catches open orders, missed fills and
   positions, and looks up orders that were sent but never heard from.
   `OmsService` publishes changes to `OmsListener`s and has no transport of its
-  own. `VenueConnections` owns the TLS, HTTP, REST and WebSocket sessions, and
+  own. `ExchangeConnections` owns the TLS, HTTP, REST and WebSocket sessions, and
   routes feed events to the OMS and RPC replies to the EMS.
 - **Risk** (`risk/`) depends only on config and models. `RiskManager` checks
   every order before it reaches the EMS, in this order: kill switch → order
@@ -73,16 +73,16 @@ all order state. It is built from three independent modules:
   it also cancels active orders.
 
 Everything specific to one exchange lives in
-`include/axon/exchanges/<venue>/` and `src/exchanges/<venue>/`. Supported
-venues are `binance`, `bybit`, `okx` and `deribit`. Each venue has:
+`include/axon/exchanges/<exchange>/` and `src/exchanges/<exchange>/`. Supported
+exchanges are `binance`, `bybit`, `okx` and `deribit`. Each exchange has:
 
 | File | Role |
 |---|---|
-| `<venue>_builder` / `<venue>_parser` | Wire protocol: request building, simdjson parsing of feed frames |
-| `<venue>_ems` | The venue's `VenueOps` for the EMS |
-| `<venue>_oms` | The venue's `OmsVenue`: feed session, order-entry session, REST client |
+| `<exchange>_builder` / `<exchange>_parser` | Wire protocol: request building, simdjson parsing of feed frames |
+| `<exchange>_ems` | The exchange's `ExchangeOps` for the EMS |
+| `<exchange>_oms` | The exchange's `OmsExchange`: feed session, order-entry session, REST client |
 
-To add a venue, add one directory and register it with the EMS and OMS. See
+To add an exchange, add one directory and register it with the EMS and OMS. See
 [GUIDE.md](cpp/axon_order_execution/GUIDE.md).
 
 Strategies have two planes:
@@ -173,5 +173,5 @@ source ~/.config/axon/binance-testnet.env   # API keys come only from the enviro
 
 ---
 
-How the order execution engine is put together, and how to add a venue:
+How the order execution engine is put together, and how to add an exchange:
 [cpp/axon_order_execution/GUIDE.md](cpp/axon_order_execution/GUIDE.md).

@@ -1,6 +1,6 @@
-// Per-venue REST snapshots, behind one interface.
+// Per-exchange REST snapshots, behind one interface.
 //
-// Four venues, four unrelated REST APIs, one shape the reconcilers can use.
+// Four exchanges, four unrelated REST APIs, one shape the reconcilers can use.
 // Each implementation signs its own requests -- and each signs differently,
 // which is exactly why this is an interface rather than a switch statement:
 //
@@ -38,7 +38,7 @@
 
 namespace axon::oms {
 
-class VenueRest {
+class ExchangeRest {
  public:
   using TickerCallback =
       std::function<void(std::optional<models::Ticker>, const std::string& error)>;
@@ -53,12 +53,12 @@ class VenueRest {
   using OrderCallback =
       std::function<void(std::optional<models::Order>, const std::string& error)>;
 
-  virtual ~VenueRest() = default;
+  virtual ~ExchangeRest() = default;
 
   virtual void get_ticker(const std::string& instrument, TickerCallback cb) = 0;
   virtual void get_open_orders(const std::string& currency, OrdersCallback cb) = 0;
-  // One order's current state by venue order id, open or closed. `order`
-  // supplies what a venue needs beside the id -- the symbol, on three of the
+  // One order's current state by exchange order id, open or closed. `order`
+  // supplies what an exchange needs beside the id -- the symbol, on three of the
   // four. This is how the order reconciler learns the FINAL state of an order
   // that left the open-orders snapshot while the feed was not looking.
   virtual void get_order(const models::Order& order, OrderCallback cb) = 0;
@@ -66,7 +66,7 @@ class VenueRest {
   virtual void get_user_trades(const std::string& currency, std::int64_t start_ms,
                                std::int64_t end_ms, FillsCallback cb) = 0;
 
-  // Binance only: create and renew the user data stream key. Every other venue
+  // Binance only: create and renew the user data stream key. Every other exchange
   // returns "not supported" -- their private streams authenticate over the
   // socket rather than through a URL token.
   virtual void create_listen_key(StringCallback cb) {
@@ -79,7 +79,7 @@ class VenueRest {
   virtual const std::string& exchange_name() const = 0;
 };
 
-std::unique_ptr<VenueRest> make_venue_rest(const ExchangeConfig& exchange,
+std::unique_ptr<ExchangeRest> make_exchange_rest(const ExchangeConfig& exchange_config,
                                            net::HttpClient* http);
 
 }  // namespace axon::oms

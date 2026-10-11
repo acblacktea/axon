@@ -1,12 +1,12 @@
 // Binance USDT-M against the LIVE TESTNET.
 //
 // Everything else in this repo proves the bytes are right in isolation. This
-// proves the venue accepts them: the listenKey and user data stream, the
+// proves the exchange accepts them: the listenKey and user data stream, the
 // ws-fapi order-entry connection, every signed request, and the round trip
 // from an order sent to the update and fill that come back on the feed.
 //
 // The WebSocket order-entry mapping for Binance was transcribed from the
-// venue's documentation and there is no REST order path beside it, so this
+// exchange's documentation and there is no REST order path beside it, so this
 // suite is the first evidence that order entry works at all.
 //
 // SAFETY
@@ -45,8 +45,8 @@
 #include "axon/models/order.h"
 #include "axon/net/http_client.h"
 #include "axon/net/tls_stream.h"
-#include "axon/oms/venue_rest.h"
-#include "axon/oms/venue_session.h"
+#include "axon/oms/exchange_rest.h"
+#include "axon/oms/exchange_session.h"
 #include "axon/transport/hot_messages.h"
 #include "axon/util/logging.h"
 
@@ -79,7 +79,7 @@ std::string fresh_label(const char* tag) {
   return std::string("axt") + tag + std::to_string(now_ms()) + "x" + std::to_string(n++);
 }
 
-// Formats `v` floored to `step` with the step's decimals, as a venue string.
+// Formats `v` floored to `step` with the step's decimals, as an exchange string.
 std::string to_step(double v, double step, int decimals) {
   const double floored = std::floor(v / step + 1e-9) * step;
   char buf[64];
@@ -104,7 +104,7 @@ class Harness {
 
     tls_.use_default_trust_store();
     http_ = std::make_unique<axon::net::HttpClient>(&tls_);
-    rest_ = axon::oms::make_venue_rest(exchange_, http_.get());
+    rest_ = axon::oms::make_exchange_rest(exchange_, http_.get());
     ems_ = std::make_unique<axon::ems::EmsService>(config_, http_.get());
     ems_->set_order_lookup([this](const std::string& id) -> std::optional<Order> {
       const auto it = known_.find(id);
@@ -112,7 +112,7 @@ class Harness {
       return it->second;
     });
 
-    axon::oms::VenueSessionHandlers feed;
+    axon::oms::ExchangeSessionHandlers feed;
     feed.on_order = [this](const axon::transport::OrderUpdateMsg& m) {
       auto o = axon::transport::decode_order_update(m);
       known_[o.order_id] = o;
@@ -123,10 +123,10 @@ class Harness {
     };
     feed.on_account = [this](const axon::models::AccountSummary&) { ++account_updates_; };
     feed.on_error = [this](const std::string& e) { errors_.push_back("feed: " + e); };
-    feed_ = axon::oms::make_venue_session(exchange_, config_.websocket, config_.runtime,
+    feed_ = axon::oms::make_exchange_session(exchange_, config_.websocket, config_.runtime,
                                           &tls_, rest_.get(), std::move(feed));
 
-    axon::oms::VenueSessionHandlers trade;
+    axon::oms::ExchangeSessionHandlers trade;
     trade.on_rpc_reply = [this](std::int64_t id, bool ok, std::string_view payload,
                                 std::string_view error) {
       replies_.push_back(std::string(payload));
@@ -192,7 +192,7 @@ class Harness {
     return out.value_or(OrderResult{false, std::nullopt, "no reply"});
   }
 
-  // The venue's order id for the order placed with client id `label`. The EMS
+  // The exchange's order id for the order placed with client id `label`. The EMS
   // does not surface it (see BinanceTestnet.PlaceResultCarriesTheOrderId), so
   // it is read from the raw ws-fapi reply.
   std::optional<std::string> order_id_for(const std::string& label) {
@@ -300,7 +300,7 @@ class Harness {
   }
 
   // A post-only buy far enough below the touch that it rests, inside the
-  // venue's PERCENT_PRICE band (0.95x).
+  // exchange's PERCENT_PRICE band (0.95x).
   OrderRequest resting_buy(const std::string& label, double discount = 0.97) {
     auto t = ticker();
     EXPECT_TRUE(t.has_value());
@@ -328,10 +328,10 @@ class Harness {
   axon::Config config_;
   axon::net::TlsContext tls_;
   std::unique_ptr<axon::net::HttpClient> http_;
-  std::unique_ptr<axon::oms::VenueRest> rest_;
+  std::unique_ptr<axon::oms::ExchangeRest> rest_;
   std::unique_ptr<axon::ems::EmsService> ems_;
-  std::unique_ptr<axon::oms::VenueSession> feed_;
-  std::unique_ptr<axon::oms::VenueSession> trade_;
+  std::unique_ptr<axon::oms::ExchangeSession> feed_;
+  std::unique_ptr<axon::oms::ExchangeSession> trade_;
 
   std::vector<Order> updates_;
   std::vector<axon::models::Fill> fills_;
@@ -389,7 +389,7 @@ class BinanceTestnet : public ::testing::Test {
     return s;
   }
 
-  // Places a resting order and returns its venue id, or fails the test.
+  // Places a resting order and returns its exchange id, or fails the test.
   std::string place_resting(const std::string& label, double discount = 0.97) {
     const auto req = h_->resting_buy(label, discount);
     const auto r = h_->place(req);
@@ -506,7 +506,7 @@ TEST_F(BinanceTestnet, ModifyMovesThePriceAndKeepsTheQuantity) {
 }
 
 // GTX is Binance's post-only: an order that would take liquidity must never
-// fill. The venue either rejects the request (-5022, what testnet does) or
+// fill. The exchange either rejects the request (-5022, what testnet does) or
 // accepts and expires it; either way nothing trades.
 TEST_F(BinanceTestnet, PostOnlyThatWouldCrossNeverFills) {
   const auto label = fresh_label("x");
@@ -534,13 +534,13 @@ TEST_F(BinanceTestnet, PostOnlyThatWouldCrossNeverFills) {
 // Rejections
 // ===========================================================================
 
-TEST_F(BinanceTestnet, VenueRejectionCarriesTheVenuesReason) {
+TEST_F(BinanceTestnet, ExchangeRejectionCarriesTheExchangesReason) {
   auto req = h_->resting_buy(fresh_label("r"));
   req.amount = *Qty::from_string("0.00001");  // below LOT_SIZE stepSize 0.0001
   const auto r = h_->place(req);
   EXPECT_FALSE(r.success);
   EXPECT_FALSE(r.error.empty());
-  EXPECT_NE(r.error, "the venue did not reply in time");
+  EXPECT_NE(r.error, "the exchange did not reply in time");
 }
 
 // PERCENT_PRICE (multiplierUp 1.05) caps how far ABOVE the mark a buy may be.
@@ -553,7 +553,7 @@ TEST_F(BinanceTestnet, BuyAboveThePercentPriceCapIsRejected) {
   const auto r = h_->place(req);
   EXPECT_FALSE(r.success);
   EXPECT_FALSE(r.error.empty());
-  EXPECT_NE(r.error, "the venue did not reply in time");
+  EXPECT_NE(r.error, "the exchange did not reply in time");
 }
 
 TEST_F(BinanceTestnet, CancellingAnUnknownOrderFails) {
@@ -660,7 +660,7 @@ TEST_F(BinanceTestnet, MarketOrderFillIsReportedAndReconcilable) {
 // Client order ids, idempotency and single-order lookup
 // ===========================================================================
 
-// The acceptance carries the venue's order, so a strategy can tie what it
+// The acceptance carries the exchange's order, so a strategy can tie what it
 // placed to what it later sees.
 TEST_F(BinanceTestnet, PlaceResultCarriesTheOrderId) {
   const auto label = fresh_label("g");
@@ -677,7 +677,7 @@ TEST_F(BinanceTestnet, PlaceResultCarriesTheOrderId) {
   }
 }
 
-// With no label, the venue is given our internal_order_id and echoes it on
+// With no label, the exchange is given our internal_order_id and echoes it on
 // every update -- the handle that resolves an order whose reply was lost.
 TEST_F(BinanceTestnet, FeedUpdatesCarryTheInternalOrderId) {
   auto req = h_->resting_buy("");
@@ -685,7 +685,7 @@ TEST_F(BinanceTestnet, FeedUpdatesCarryTheInternalOrderId) {
   const auto r = h_->place(req);
   ASSERT_TRUE(r.success) << r.error;
   const auto id = h_->order_id_for(req.internal_order_id);
-  ASSERT_TRUE(id.has_value()) << "the venue did not echo the internal_order_id";
+  ASSERT_TRUE(id.has_value()) << "the exchange did not echo the internal_order_id";
   ASSERT_TRUE(h_->await_status(*id, OrderStatus::kOpen));
   EXPECT_EQ(h_->latest(*id)->internal_order_id.value_or(""), req.internal_order_id);
 
@@ -749,7 +749,7 @@ TEST_F(BinanceTestnet, ResubmittingTheSameRequestIsRefused) {
     for (auto& o : orders) with_label += o.internal_order_id.value_or("") == label;
     return err.empty() && with_label > 0;
   });
-  EXPECT_EQ(with_label, 1) << "the venue holds more than one order for one request";
+  EXPECT_EQ(with_label, 1) << "the exchange holds more than one order for one request";
 
   h_->cancel(*id);
   h_->await_status(*id, OrderStatus::kCancelled);

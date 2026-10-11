@@ -36,8 +36,8 @@ class ZmqServer {
   // it holds the ROUTER identity, not a pointer into the loop.
   //
   // DEFERRED REPLIES ARE THE POINT. Placing an order is a network round trip;
-  // answering it inline would stall every venue feed for its duration. The
-  // handler keeps the sink, returns immediately, and calls it when the venue
+  // answering it inline would stall every exchange feed for its duration. The
+  // handler keeps the sink, returns immediately, and calls it when the exchange
   // answers.
   //
   // Calling a sink twice sends two replies, which would desynchronise a

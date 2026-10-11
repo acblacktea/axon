@@ -1,10 +1,10 @@
 // bybit order entry. Counterpart of ems/bybit/bybit.py.
 #pragma once
 
-#include "axon/ems/venue_ops.h"
+#include "axon/ems/exchange_ops.h"
 
-namespace axon::ems::bybit {
+namespace axon::exchanges::bybit {
 
-const VenueOps& ops();
+const ems::ExchangeOps& ems_ops();
 
-}  // namespace axon::ems::bybit
+}  // namespace axon::exchanges::bybit

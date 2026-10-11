@@ -7,7 +7,7 @@
 //     to subscribe to and no WebSocket-level auth.
 //
 //   * THE LISTENKEY EXPIRES. It must be renewed over REST every 30 minutes,
-//     and when it lapses the venue sends `listenKeyExpired` and stops. That is
+//     and when it lapses the exchange sends `listenKeyExpired` and stops. That is
 //     reported as kSessionExpired, because the correct response is to
 //     re-establish the session, not to log and carry on.
 //
@@ -33,10 +33,10 @@
 #include "axon/core/timestamp.h"
 #include "axon/models/portfolio.h"
 #include "axon/transport/hot_messages.h"
-#include "axon/venue/json_view.h"
-#include "axon/venue/venue_events.h"
+#include "axon/exchanges/common/json_view.h"
+#include "axon/exchanges/common/exchange_events.h"
 
-namespace axon::venue::binance {
+namespace axon::exchanges::binance {
 
 inline constexpr std::string_view kExchangeName = "binance";
 
@@ -46,12 +46,12 @@ inline constexpr std::string_view kTestnetWsUrl =
 inline constexpr std::string_view kProductionWsHost = "fstream.binance.com";
 inline constexpr std::string_view kTestnetWsHost = "stream.binancefuture.com";
 
-using MessageKind = VenueMessageKind;
-using ParseResult = VenueParseResult;
+using MessageKind = ExchangeMessageKind;
+using ParseResult = ExchangeParseResult;
 
 // From _parse_order. EXPIRED and EXPIRED_IN_MATCH both map to cancelled: from
 // our side an expired order is simply no longer live, and collapsing them
-// keeps the state machine at five states across four venues.
+// keeps the state machine at five states across four exchanges.
 struct StatusMapping {
   models::OrderStatus status;
   bool recognised;
@@ -269,7 +269,7 @@ class BinanceParser {
     // walk in document order for simdjson.
     static_cast<void>(tif);
 
-    // Liquidity is not knowable from an order update on any venue; it arrives
+    // Liquidity is not knowable from an order update on any exchange; it arrives
     // with the fill. Default to maker and let the fill upgrade it, matching
     // every other parser here.
     order.liquidity = static_cast<std::uint8_t>(models::Liquidity::kMaker);
@@ -366,4 +366,4 @@ class BinanceParser {
   std::uint64_t seq_ = 0;
 };
 
-}  // namespace axon::venue::binance
+}  // namespace axon::exchanges::binance

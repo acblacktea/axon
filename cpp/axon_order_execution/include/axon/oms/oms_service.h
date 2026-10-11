@@ -3,7 +3,7 @@
 //
 // WHAT IT OWNS
 //   * the order, fill and portfolio stores, and their persistence;
-//   * a reconciler per venue -- open orders, missed fills, positions;
+//   * a reconciler per exchange -- open orders, missed fills, positions;
 //   * the processing of every feed event, in the order that matters:
 //       order update -> resolve to its request -> publish the raw bytes ->
 //       decode -> update the store -> publish the change;
@@ -13,8 +13,8 @@
 //     late still finds its way back to the request.
 //
 // WHAT IT DOES NOT
-//   * Talk to the venues: VenueConnections holds the connections, and feeds
-//     this class through VenueEventSink.
+//   * Talk to the exchanges: ExchangeConnections holds the connections, and feeds
+//     this class through ExchangeEventSink.
 //   * Publish: it decides WHAT is published and to WHOM, and tells its
 //     OmsListeners; the engine turns that into shared-memory and ZMQ traffic.
 //     That keeps transport out of here, and this class testable without it.
@@ -40,8 +40,8 @@
 #include "axon/oms/order_store.h"
 #include "axon/oms/portfolio_store.h"
 #include "axon/oms/reconciler.h"
-#include "axon/oms/venue_connections.h"
-#include "axon/oms/venue_rest.h"
+#include "axon/oms/exchange_connections.h"
+#include "axon/oms/exchange_rest.h"
 #include "axon/transport/hot_messages.h"
 
 namespace axon::repository {
@@ -50,7 +50,7 @@ class PostgresWriter;
 
 namespace axon::oms {
 
-class OmsService final : public VenueEventSink {
+class OmsService final : public ExchangeEventSink {
  public:
   // With config.database, the stores write through a Postgres writer thread
   // (started here; throws if it cannot connect). Without one they keep
@@ -61,9 +61,9 @@ class OmsService final : public VenueEventSink {
   OmsService(const OmsService&) = delete;
   OmsService& operator=(const OmsService&) = delete;
 
-  // One reconciler per venue that has a REST client. A venue without one is
+  // One reconciler per exchange that has a REST client. An exchange without one is
   // logged: a message its feed drops will never be recovered.
-  void start(const std::map<std::string, VenueRest*>& rests);
+  void start(const std::map<std::string, ExchangeRest*>& rests);
   // Fires whichever reconciliation passes are due. Non-blocking.
   void poll();
   // Drops the reconcilers -- before the REST clients they borrow go away --
@@ -73,7 +73,7 @@ class OmsService final : public VenueEventSink {
   // Listeners are not owned and must outlive the service.
   void add_listener(OmsListener* listener) { listeners_.push_back(listener); }
 
-  // --- VenueEventSink: the feed ------------------------------------------------
+  // --- ExchangeEventSink: the feed ------------------------------------------------
   void on_order_update(const std::string& exchange,
                        const transport::OrderUpdateMsg& msg) override;
   void on_fill(const std::string& exchange, const transport::FillMsg& msg) override;
@@ -83,7 +83,7 @@ class OmsService final : public VenueEventSink {
 
   // --- around an EMS placement -------------------------------------------------
   // Before the request is handed to the EMS: registers its client order id,
-  // so the venue's updates -- even with the placement reply lost -- map back
+  // so the exchange's updates -- even with the placement reply lost -- map back
   // to it and its strategy.
   void before_place(const std::string& exchange, const models::OrderRequest& request);
   // With the EMS's verdict, passed as plain values so the OMS does not
@@ -133,7 +133,7 @@ class OmsService final : public VenueEventSink {
   std::map<std::string, std::unique_ptr<Reconciler>> reconcilers_;
   std::vector<OmsListener*> listeners_;
   // Sequence for hot messages this process originates: only recovered fills.
-  // Venue-sourced messages carry their parser's numbering.
+  // Exchange-sourced messages carry their parser's numbering.
   std::uint64_t hot_seq_ = 0;
 };
 

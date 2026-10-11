@@ -48,8 +48,8 @@ class MetricsClient {
   void set_ws_connected(const std::string& exchange, bool connected);
   void inc_ws_reconnect(const std::string& exchange);
   void inc_ws_heartbeat_miss(const std::string& exchange);
-  // Age of a venue-stamped message on arrival. The one metric that separates
-  // "we are slow" from "the venue is slow".
+  // Age of an exchange-stamped message on arrival. The one metric that separates
+  // "we are slow" from "the exchange is slow".
   void observe_ws_message_age(const std::string& exchange,
                               const std::string& category, double seconds);
 
@@ -66,7 +66,7 @@ class MetricsClient {
   void observe_order_submit_latency(const std::string& exchange, double seconds);
   void observe_order_cancel_latency(const std::string& exchange, double seconds);
   void observe_order_modify_latency(const std::string& exchange, double seconds);
-  // Time from submit to the venue's first acknowledgement on the feed.
+  // Time from submit to the exchange's first acknowledgement on the feed.
   void observe_order_ack_latency(const std::string& exchange, double seconds);
   void observe_order_fill_latency(const std::string& exchange,
                                   const std::string& terminal_status,

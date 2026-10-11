@@ -19,11 +19,11 @@ double monotonic_seconds() {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-Reconciler::Reconciler(const Config& config, ExchangeConfig exchange,
-                       VenueRest* rest, OrderStore* orders,
+Reconciler::Reconciler(const Config& config, ExchangeConfig exchange_config,
+                       ExchangeRest* rest, OrderStore* orders,
                        ReconcilerCallbacks callbacks)
     : config_(config),
-      exchange_(std::move(exchange)),
+      exchange_(std::move(exchange_config)),
       rest_(rest),
       orders_(orders),
       callbacks_(std::move(callbacks)) {
@@ -101,7 +101,7 @@ void Reconciler::run_order_pass() {
             AXON_LOG_WARN(log(), "[{}] order reconciliation failed: {}",
                             exchange_.name, error);
           } else {
-            // What the venue lists as open: apply it. OrderStore::reconcile
+            // What the exchange lists as open: apply it. OrderStore::reconcile
             // logs each correction; every one is a message the feed lost.
             const auto before = orders_->active_orders().size();
             orders_->reconcile(orders);
@@ -132,7 +132,7 @@ void Reconciler::run_order_pass() {
 void Reconciler::resolve_missing_orders() {
   // The other direction: active here, absent there. Applying the snapshot
   // alone never corrects these -- it only touches orders it lists -- so an
-  // order the venue filled or cancelled while the feed was down would stay
+  // order the exchange filled or cancelled while the feed was down would stay
   // "open" locally forever.
   std::vector<models::Order> missing;
   for (auto& order : orders_->active_orders()) {
@@ -146,7 +146,7 @@ void Reconciler::resolve_missing_orders() {
   }
   if (missing.size() > kMaxOrderLookupsPerPass) {
     AXON_LOG_WARN(log(),
-                  "[{}] {} orders are open locally but not at the venue; looking "
+                  "[{}] {} orders are open locally but not at the exchange; looking "
                   "up {} this pass, the rest next pass",
                   exchange_.name, missing.size(), kMaxOrderLookupsPerPass);
     missing.resize(kMaxOrderLookupsPerPass);
@@ -170,7 +170,7 @@ void Reconciler::resolve_missing_orders() {
                         exchange_.name, id, models::to_string(found->status),
                         found->filled_amount.to_string());
         }
-        // Still open is the race where the order reached the venue after the
+        // Still open is the race where the order reached the exchange after the
         // snapshot was taken; applying it is harmless either way.
         orders_->reconcile({*found});
       }
@@ -207,7 +207,7 @@ void Reconciler::run_fill_pass() {
 
           std::size_t recovered = 0;
           for (auto& fill : fills) {
-            // trade_id is the venue's idempotency key: the same fill arrives
+            // trade_id is the exchange's idempotency key: the same fill arrives
             // on the feed AND here, and counting it twice would double the
             // position.
             if (have_seen_fill(fill.trade_id)) {

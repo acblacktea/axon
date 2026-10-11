@@ -3,7 +3,7 @@
 // EVERY MAPPING HERE IS TRANSCRIBED FROM THE PYTHON IMPLEMENTATION
 // (oms/deribit/deribit_ws.py and ems/deribit/deribit.py), not from Deribit's
 // documentation. That is deliberate. The Python code has been reconciling
-// against the live venue for a long time; the documentation has not. Where the
+// against the live exchange for a long time; the documentation has not. Where the
 // two disagree, the running code is the specification, and any divergence
 // introduced here is a bug that will only show up in production.
 //
@@ -17,7 +17,7 @@
 
 #include "axon/models/enums.h"
 
-namespace axon::venue::deribit {
+namespace axon::exchanges::deribit {
 
 inline constexpr std::string_view kExchangeName = "deribit";
 
@@ -109,4 +109,4 @@ constexpr std::string_view order_entry_method(models::OrderSide side) noexcept {
   return side == models::OrderSide::kBuy ? "private/buy" : "private/sell";
 }
 
-}  // namespace axon::venue::deribit
+}  // namespace axon::exchanges::deribit

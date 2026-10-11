@@ -1,6 +1,6 @@
-#include "axon/venue/json_writer.h"
+#include "axon/exchanges/common/json_writer.h"
 
-namespace axon::venue {
+namespace axon::exchanges {
 namespace detail {
 
 void Writer::json_string(std::string_view s) noexcept {
@@ -78,4 +78,4 @@ void Writer::integer(std::int64_t v) noexcept {
 }
 
 }  // namespace detail
-}  // namespace axon::venue
+}  // namespace axon::exchanges

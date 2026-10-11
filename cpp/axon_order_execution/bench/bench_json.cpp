@@ -319,7 +319,7 @@ Extracted parse_simdjson(simdjson::ondemand::parser& parser,
 // Hand-written scanner: memmem for each key, then read the value.
 //
 // The floor. No generality, no validation, no error recovery -- it assumes a
-// message shape the venue has already agreed to. Included to show what the
+// message shape the exchange has already agreed to. Included to show what the
 // libraries are actually costing, not as a recommendation: an exchange that
 // adds a field or reorders one breaks this silently, which is a bad trade for
 // a few hundred nanoseconds unless you are certain.

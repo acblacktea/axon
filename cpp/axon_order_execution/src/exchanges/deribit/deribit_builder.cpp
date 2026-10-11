@@ -2,9 +2,9 @@
 
 #include <cstring>
 
-namespace axon::venue::deribit {
+namespace axon::exchanges::deribit {
 
-using axon::venue::detail::Writer;
+using axon::exchanges::detail::Writer;
 
 namespace {
 
@@ -50,20 +50,20 @@ std::size_t DeribitBuilder::place_order(char* out, std::size_t cap,
   // Every order carries a client order id -- the label, or our
   // internal_order_id when there is none -- so its updates can be tied back
   // to the request even when the placement reply is lost. See
-  // OrderRequest::venue_client_id.
+  // OrderRequest::exchange_client_id.
   w.raw(R"(,"label":)");
-  w.json_string(req.venue_client_id());
+  w.json_string(req.exchange_client_id());
 
   // DIVERGENCE from ems/deribit/deribit.py, deliberately.
   //
   // The Python sends the STRINGS "true" for post_only and reject_post_only:
   //     params["post_only"] = "true"
   // Deribit coerces them, so it works, but the documented type is boolean and
-  // a venue that ever tightens validation would reject it. This emits real
+  // an exchange that ever tightens validation would reject it. This emits real
   // JSON booleans.
   //
   // VERIFY THIS AGAINST TESTNET BEFORE TRUSTING IT IN PRODUCTION. It is the
-  // only place in the venue layer that does something the running Python does
+  // only place in the exchange layer that does something the running Python does
   // not, and it cannot be verified without a live connection.
   if (req.post_only) {
     w.raw(R"(,"post_only":true)");
@@ -207,4 +207,4 @@ std::size_t DeribitBuilder::heartbeat_probe(char* out, std::size_t cap) noexcept
   return w.written(out);
 }
 
-}  // namespace axon::venue::deribit
+}  // namespace axon::exchanges::deribit

@@ -54,7 +54,7 @@
         ┌────────┴────────────────────────────────────────────┴─────────┐
         │                    axon_engine（单进程、单线程）              │
         │                                                                │
-        │  VenueSession × N ── 私有行情流（订单/成交/持仓）                │
+        │  ExchangeSession × N ── 私有行情流（订单/成交/持仓）                │
         │  TradeSession × N ── 下单专用连接（Binance / Bybit）             │
         │  EmsService      ── 下单 / 撤单 / 改单                          │
         │  OrderStore / FillStore / PortfolioStore ── 本地状态             │
@@ -79,28 +79,29 @@ Python 策略能连这个引擎**不用改一行代码**——两边的 JSON 控
 | `models/` | core | 领域类型 + 枚举字符串表 |
 | `transport/` | models, nlohmann | 控制面 JSON 编解码、数据面 POD 消息、ZMQ 服务、共享内存桥 |
 | `net/` | core, OpenSSL | 手写 WebSocket、非阻塞 TCP、TLS（memory BIO）、SHA-1/SHA-256/HMAC/base64 |
-| `venue/` + `exchanges/<交易所>/*_builder`、`*_parser` | transport, simdjson, net | 共用 JSON 工具，以及四家的入站解析和出站构造（`axon_venue` 库） |
+| `exchanges/common/` + `exchanges/<交易所>/*_builder`、`*_parser` | transport, simdjson, net | 共用 JSON 工具，以及四家的入站解析和出站构造（`axon_exchanges` 库） |
 | `app/` | 以上全部 + yaml-cpp / spdlog / prometheus-cpp / cppzmq / libpqxx | `ems/`、`oms/`、`risk/`、`exchanges/<交易所>/*_ems`、`*_oms`，以及配置、日志、指标、持久化 |
 
 #### 代码组织：通用服务 + 每家交易所一个目录
 
 ```
 ems/        EmsService：下单、撤单、改单，超时，重复提交防护（与交易所无关）
-oms/        OmsService：订单、成交、持仓、对账；VenueConnections：所有连接
+oms/        OmsService：订单、成交、持仓、对账；ExchangeConnections：所有连接
 risk/       RiskManager：风控（只依赖配置和模型；risk_feed.h 是它与 OMS 之间唯一的桥）
-venue/      四家共用的协议工具：JSON 读写、统一的解析结果类型
-exchanges/<交易所>/
-  <x>_builder.*    出站报文构造（下单、登录、订阅）       ┐ 编进 axon_venue，
-  <x>_parser.h     入站报文解析（订单、成交、账户推送）   ┘ 不依赖 ems/oms
-  <x>_ems.*        这家的下单函数表 VenueOps
-  <x>_oms.*        这家的行情回报连接、下单连接、REST 快照（函数表 OmsVenue）
+exchanges/
+  common/          四家共用的协议工具：JSON 读写、统一的解析结果类型
+  <交易所>/        命名空间 axon::exchanges::<交易所>
+    <x>_builder.*  出站报文构造（下单、登录、订阅）       ┐ 编进 axon_exchanges，
+    <x>_parser.h   入站报文解析（订单、成交、账户推送）   ┘ 不依赖 ems/oms
+    <x>_ems.*      这家的下单函数表 ExchangeOps
+    <x>_oms.*      这家的行情回报连接、下单连接、REST 快照（函数表 OmsExchange）
 ```
 
 **新增一家交易所**，只需要：
 
-1. 新建 `exchanges/<交易所>/`，写构造器、解析器、`<x>_ems.cpp`（填一张 `VenueOps`）和 `<x>_oms.cpp`（填一张 `OmsVenue`）；
-2. 在 `ems/venue_ops.cpp` 和 `oms/oms_venue.cpp` 的注册表里各加一行；
-3. 在 CMakeLists 里加上这几个源文件；在 `ems/venue_ops.h` 的 `VenueState` 里加上它的构造器。
+1. 新建 `exchanges/<交易所>/`，写构造器、解析器、`<x>_ems.cpp`（填一张 `ExchangeOps`）和 `<x>_oms.cpp`（填一张 `OmsExchange`）；
+2. 在 `ems/exchange_ops.cpp` 和 `oms/oms_exchange.cpp` 的注册表里各加一行；
+3. 在 CMakeLists 里加上这几个源文件；在 `ems/exchange_ops.h` 的 `ExchangeState` 里加上它的构造器。
 
 `ems/`、`oms/` 里的通用代码不需要改动：没有任何地方再用 `exchange == "..."` 判断交易所。
 
@@ -165,7 +166,7 @@ while (!stop) {
 ```
 交易所 WebSocket 帧
    → ws_frame 解帧（零拷贝，指针指向接收缓冲区内部）
-   → venue parser（simdjson On-Demand，直接从 socket 缓冲区读那 6 个字段）
+   → exchange parser（simdjson On-Demand，直接从 socket 缓冲区读那 6 个字段）
    → OrderUpdateMsg（定长 POD）
    → ① ShmBridge：字节先发给同机策略        ← 先做这个
      ② OrderStore：转成领域 Order，写缓存 + 落库

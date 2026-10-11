@@ -21,7 +21,7 @@ class OmsListener {
  public:
   virtual ~OmsListener() = default;
 
-  // A venue order update, already resolved to the request that produced it
+  // An exchange order update, already resolved to the request that produced it
   // (internal id and strategy filled in). Called FIRST, before anything is
   // decoded or allocated: this is where the shared-memory hot path publishes,
   // and nothing on the control-plane side may delay it.
@@ -37,7 +37,7 @@ class OmsListener {
 
   // A fill, attributed to its order's strategy and deduplicated: each trade
   // reaches a listener once, whether the feed or the reconciler found it.
-  // `msg` is the venue's own bytes for a feed fill and an encoding of `fill`
+  // `msg` is the exchange's own bytes for a feed fill and an encoding of `fill`
   // for a recovered one -- or null when a recovered fill does not fit the
   // fixed-width hot message, in which case only the decoded form exists.
   virtual void on_fill(const transport::FillMsg* msg, const models::Fill& fill,
@@ -47,7 +47,7 @@ class OmsListener {
     static_cast<void>(recovered);
   }
 
-  // The venue's positions for one exchange, replacing the previous snapshot.
+  // The exchange's positions for one exchange, replacing the previous snapshot.
   virtual void on_positions(const std::string& exchange,
                             const std::vector<models::Position>& positions) {
     static_cast<void>(exchange);

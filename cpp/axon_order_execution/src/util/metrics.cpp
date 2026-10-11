@@ -88,7 +88,7 @@ struct MetricsClient::Impl {
                              .Register(*registry);
     ws_message_age = &prometheus::BuildHistogram()
                           .Name("axon_ws_message_age_seconds")
-                          .Help("Age of a venue-stamped message on arrival")
+                          .Help("Age of an exchange-stamped message on arrival")
                           .Register(*registry);
 
     reconciler_recovered =

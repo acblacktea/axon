@@ -16,7 +16,7 @@
 // The client uses the fast path when one is configured and falls back to ZMQ
 // otherwise, so a strategy is written once and gets whichever is available.
 //
-// FIRE-AND-FORGET ON THE FAST PATH. A ring push has no reply: the venue's
+// FIRE-AND-FORGET ON THE FAST PATH. A ring push has no reply: the exchange's
 // answer arrives later as an order update, exactly as it would from the
 // WebSocket. A strategy that needs to know its order id synchronously must use
 // the control plane -- which is a real trade, not an oversight, because
@@ -64,9 +64,9 @@ struct StrategyEvents {
 
 // What became of a control-plane order placement.
 enum class PlaceOutcome {
-  // The venue accepted it.
+  // The exchange accepted it.
   kAccepted,
-  // The venue, or the engine before sending, refused it. Nothing is live; the
+  // The exchange, or the engine before sending, refused it. Nothing is live; the
   // same request may be retried.
   kRejected,
   // It was sent and no verdict came back in time, so it MAY BE LIVE. Do not
@@ -78,7 +78,7 @@ enum class PlaceOutcome {
 
 struct PlaceResult {
   PlaceOutcome outcome = PlaceOutcome::kRejected;
-  // The venue's view of the order, when the reply carried one.
+  // The exchange's view of the order, when the reply carried one.
   std::optional<models::Order> order;
   // The id every update for this order will carry -- the handle for
   // resolving kUnknown.
@@ -114,7 +114,7 @@ class StrategyClient {
                          const std::string& order_id);
 
   // Control plane, blocking until the engine answers or the timeout expires.
-  // These are the ones that return the venue's order back.
+  // These are the ones that return the exchange's order back.
   //
   // submit_order distinguishes a refusal from a timeout; place_order is the
   // older form, which returns the order on success and folds both failures

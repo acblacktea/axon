@@ -3,7 +3,7 @@
 #include <cerrno>
 #include <cstring>
 
-#include "axon/venue/json_padding.h"
+#include "axon/exchanges/common/json_padding.h"
 
 namespace axon::net {
 
@@ -43,7 +43,7 @@ void WsConnection::connect(const WsConnectionConfig& config,
   }
 
   // The receive buffer carries simdjson's padding on top of its usable size,
-  // so a venue parser can work straight out of it without a copy.
+  // so an exchange parser can work straight out of it without a copy.
   rx_ = ByteBuffer(config_.rx_buffer_bytes + kJsonParserPadding);
   tx_ = ByteBuffer(config_.tx_buffer_bytes);
   if (config_.use_tls) {
@@ -53,7 +53,7 @@ void WsConnection::connect(const WsConnectionConfig& config,
   assembler_ = WsMessageAssembler(config_.max_message_bytes);
 
   WsHandshakeRequest request;
-  // Host must carry the port when it is not the scheme default, or a venue
+  // Host must carry the port when it is not the scheme default, or an exchange
   // behind a virtual host routes the request somewhere else.
   const bool default_port = (config_.use_tls && config_.port == 443) ||
                             (!config_.use_tls && config_.port == 80);

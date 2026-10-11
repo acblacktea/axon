@@ -82,7 +82,7 @@ class OrderStore {
   explicit OrderStore(std::shared_ptr<OrderRepository> repository = nullptr);
 
   // Registers a newly placed order. Stored as PENDING with zero filled --
-  // see (2) above. Does NOT notify: order state is driven entirely by venue
+  // see (2) above. Does NOT notify: order state is driven entirely by exchange
   // pushes and by reconciliation, never by our own placement response.
   void add_order(models::Order order);
 
@@ -90,7 +90,7 @@ class OrderStore {
   // state change.
   void update_order(models::Order order);
 
-  // Same as update_order, but records the ack latency on the first venue push
+  // Same as update_order, but records the ack latency on the first exchange push
   // for an order we placed.
   void update_from_ws(models::Order order);
 
@@ -98,16 +98,16 @@ class OrderStore {
   std::vector<models::Order> all_orders() const;
   std::vector<models::Order> active_orders() const;
 
-  // Overwrites local state from an authoritative venue snapshot. Differences
+  // Overwrites local state from an authoritative exchange snapshot. Differences
   // are logged before being applied -- a silent correction here means the
   // WebSocket feed lost something, which is worth knowing about.
   void reconcile(const std::vector<models::Order>& orders);
 
   // --- submissions --------------------------------------------------------
   //
-  // An order is known by the venue's order id only once the venue says so,
+  // An order is known by the exchange's order id only once the exchange says so,
   // and on a timeout it never does. What it carries from the start is the
-  // client order id we sent (OrderRequest::venue_client_id), which the venue
+  // client order id we sent (OrderRequest::exchange_client_id), which the exchange
   // echoes on every update and which the parsers put in internal_order_id.
   //
   // Registering a submission before it is sent maps that client id back to
@@ -120,12 +120,12 @@ class OrderStore {
   };
   void register_submission(const std::string& exchange,
                            const models::OrderRequest& request);
-  // For a request the venue definitively refused: it will never produce an
+  // For a request the exchange definitively refused: it will never produce an
   // update, so the entry would only leak.
   void forget_submission(const std::string& exchange,
                          const models::OrderRequest& request);
   std::optional<Submission> find_submission(const std::string& exchange,
-                                            std::string_view venue_client_id) const;
+                                            std::string_view exchange_client_id) const;
   std::size_t submission_count() const noexcept { return submissions_.size(); }
 
   void register_update_callback(UpdateCallback callback);
@@ -153,7 +153,7 @@ class OrderStore {
   std::unordered_map<std::string, double> submit_monotonic_;
   std::unordered_set<std::string> first_ws_seen_;
 
-  // "exchange:venue_client_id" -> submission, and internal_order_id -> that
+  // "exchange:exchange_client_id" -> submission, and internal_order_id -> that
   // key, so an entry can be dropped once its order is terminal whichever id
   // the terminal update carries.
   std::unordered_map<std::string, Submission> submissions_;

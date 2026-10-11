@@ -1,4 +1,4 @@
-// Binance / Bybit / OKX perpetual venue tests.
+// Binance / Bybit / OKX perpetual exchange tests.
 //
 // Every payload here is shaped like the real feed and every mapping asserted
 // was transcribed from the corresponding Python OMS. When one of these fails
@@ -24,7 +24,7 @@ using axon::models::Liquidity;
 using axon::models::OrderSide;
 using axon::models::OrderStatus;
 using axon::models::OrderType;
-using axon::venue::VenueMessageKind;
+using axon::exchanges::ExchangeMessageKind;
 
 namespace {
 
@@ -40,10 +40,10 @@ struct Collector {
 
 // simdjson reads past the end of the document; every input must carry padding.
 template <typename Parser>
-venue::VenueParseResult run(Parser& p, std::string_view json, Collector& c) {
+exchanges::ExchangeParseResult run(Parser& p, std::string_view json, Collector& c) {
   std::string buf(json);
   const std::size_t len = buf.size();
-  buf.resize(len + venue::kJsonPadding, '\0');
+  buf.resize(len + exchanges::kJsonPadding, '\0');
   return p.parse(buf.data(), len, buf.size(), c);
 }
 
@@ -114,11 +114,11 @@ constexpr std::string_view kBinanceTradeFrame = R"({
 }  // namespace
 
 TEST(BinanceParser, ParsesOrderUpdate) {
-  venue::binance::BinanceParser p;
+  exchanges::binance::BinanceParser p;
   Collector c;
   const auto r = run(p, kBinanceOrderFrame, c);
 
-  ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate) << (r.error ? r.error : "");
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate) << (r.error ? r.error : "");
   ASSERT_EQ(c.orders.size(), 1u);
   EXPECT_TRUE(c.fills.empty()) << "execution type NEW carries no fill";
 
@@ -141,11 +141,11 @@ TEST(BinanceParser, ParsesOrderUpdate) {
 TEST(BinanceParser, OneFrameCarriesBothOrderAndFill) {
   // ORDER_TRADE_UPDATE with x=="TRADE" is an order update AND a fill. Missing
   // this is how a fill silently never gets recorded.
-  venue::binance::BinanceParser p;
+  exchanges::binance::BinanceParser p;
   Collector c;
   const auto r = run(p, kBinanceTradeFrame, c);
 
-  EXPECT_EQ(r.kind, VenueMessageKind::kTradeUpdate);
+  EXPECT_EQ(r.kind, ExchangeMessageKind::kTradeUpdate);
   EXPECT_EQ(r.emitted, 2u);
   ASSERT_EQ(c.orders.size(), 1u);
   ASSERT_EQ(c.fills.size(), 1u);
@@ -179,27 +179,27 @@ TEST(BinanceParser, MapsEveryKnownStatus) {
       {"EXPIRED_IN_MATCH", OrderStatus::kCancelled},
   };
   for (const auto& [status, expected] : cases) {
-    venue::binance::BinanceParser p;
+    exchanges::binance::BinanceParser p;
     Collector c;
     const std::string json =
         R"({"e":"ORDER_TRADE_UPDATE","o":{"s":"BTCUSDT","S":"BUY","o":"LIMIT",)"
         R"("q":"1","p":"1","x":"NEW","X":")" +
         status + R"(","i":1,"T":1}})";
     const auto r = run(p, json, c);
-    ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate) << status;
+    ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate) << status;
     EXPECT_FALSE(r.unknown_order_state) << status;
     EXPECT_EQ(static_cast<OrderStatus>(c.orders[0].status), expected) << status;
   }
 }
 
 TEST(BinanceParser, UnknownStatusIsReported) {
-  venue::binance::BinanceParser p;
+  exchanges::binance::BinanceParser p;
   Collector c;
   const std::string json =
       R"({"e":"ORDER_TRADE_UPDATE","o":{"s":"X","S":"BUY","o":"LIMIT",)"
       R"("q":"1","p":"1","x":"NEW","X":"SOME_NEW_STATE","i":1,"T":1}})";
   const auto r = run(p, json, c);
-  EXPECT_EQ(r.kind, VenueMessageKind::kOrderUpdate);
+  EXPECT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate);
   EXPECT_TRUE(r.unknown_order_state);
   EXPECT_EQ(static_cast<OrderStatus>(c.orders[0].status), OrderStatus::kOpen);
 }
@@ -207,20 +207,20 @@ TEST(BinanceParser, UnknownStatusIsReported) {
 TEST(BinanceParser, ListenKeyExpiryIsDistinctFromAnError) {
   // The correct response is to re-establish the session, not to log and carry
   // on, so it must not be reported as a parse error or an unknown message.
-  venue::binance::BinanceParser p;
+  exchanges::binance::BinanceParser p;
   Collector c;
   const auto r = run(p, R"({"e":"listenKeyExpired","E":1786106096123})", c);
-  EXPECT_EQ(r.kind, VenueMessageKind::kSessionExpired);
+  EXPECT_EQ(r.kind, ExchangeMessageKind::kSessionExpired);
 }
 
 TEST(BinanceParser, ParsesAccountUpdateBalances) {
-  venue::binance::BinanceParser p;
+  exchanges::binance::BinanceParser p;
   Collector c;
   const auto r = run(p, R"({"e":"ACCOUNT_UPDATE","T":1,"a":{"B":[
       {"a":"USDT","wb":"10000.5","cw":"9500.25"},
       {"a":"BTC","wb":"0.5","cw":"0.5"}]}})",
                      c);
-  EXPECT_EQ(r.kind, VenueMessageKind::kPortfolioUpdate);
+  EXPECT_EQ(r.kind, ExchangeMessageKind::kPortfolioUpdate);
   ASSERT_EQ(c.accounts.size(), 2u);
   EXPECT_EQ(c.accounts[0].currency, "USDT");
   EXPECT_EQ(c.accounts[0].balance, D("10000.5"));
@@ -231,12 +231,12 @@ TEST(BinanceParser, ParsesAccountUpdateBalances) {
 TEST(BinanceParser, ZeroPriceMeansUnset) {
   // A market order arrives with "p":"0"; treating that as a price would create
   // an order at zero.
-  venue::binance::BinanceParser p;
+  exchanges::binance::BinanceParser p;
   Collector c;
   const std::string json =
       R"({"e":"ORDER_TRADE_UPDATE","o":{"s":"X","S":"SELL","o":"MARKET",)"
       R"("q":"1","p":"0","x":"NEW","X":"NEW","i":9,"T":1}})";
-  ASSERT_EQ(run(p, json, c).kind, VenueMessageKind::kOrderUpdate);
+  ASSERT_EQ(run(p, json, c).kind, ExchangeMessageKind::kOrderUpdate);
   EXPECT_EQ(c.orders[0].has_price, 0);
   EXPECT_EQ(static_cast<OrderType>(c.orders[0].order_type), OrderType::kMarket);
   EXPECT_EQ(static_cast<OrderSide>(c.orders[0].side), OrderSide::kSell);
@@ -247,7 +247,7 @@ TEST(BinanceParser, ZeroPriceMeansUnset) {
 // ===========================================================================
 
 TEST(BybitParser, ParsesOrderTopic) {
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   Collector c;
   const auto r = run(p, R"({"topic":"order","data":[{
       "category":"linear","symbol":"BTCUSDT","orderId":"BYBIT-1","side":"Buy",
@@ -257,7 +257,7 @@ TEST(BybitParser, ParsesOrderTopic) {
       "updatedTime":"1786106096456"}]})",
                      c);
 
-  ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate) << (r.error ? r.error : "");
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate) << (r.error ? r.error : "");
   ASSERT_EQ(c.orders.size(), 1u);
   const auto& o = c.orders[0];
   EXPECT_EQ(o.exchange.view(), "bybit");
@@ -273,7 +273,7 @@ TEST(BybitParser, ParsesOrderTopic) {
 TEST(BybitParser, DropsNonLinearCategories) {
   // One private stream carries linear, inverse, option and spot. A spot fill
   // applied to a perp position would be silently wrong.
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   Collector c;
   const auto r = run(p, R"({"topic":"order","data":[
       {"category":"spot","symbol":"BTCUSDT","orderId":"S-1","side":"Buy",
@@ -301,33 +301,33 @@ TEST(BybitParser, MapsEveryKnownStatus) {
       {"Triggered", OrderStatus::kOpen},
   };
   for (const auto& [status, expected] : cases) {
-    venue::bybit::BybitParser p;
+    exchanges::bybit::BybitParser p;
     Collector c;
     const std::string json =
         R"({"topic":"order","data":[{"category":"linear","symbol":"X",)"
         R"("orderId":"1","side":"Buy","qty":"1","orderStatus":")" +
         status + R"(","createdTime":"1"}]})";
     const auto r = run(p, json, c);
-    ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate) << status;
+    ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate) << status;
     EXPECT_FALSE(r.unknown_order_state) << status;
     EXPECT_EQ(static_cast<OrderStatus>(c.orders[0].status), expected) << status;
   }
 }
 
 TEST(BybitParser, PriceZeroMeansUnset) {
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   Collector c;
   const auto r = run(p, R"({"topic":"order","data":[{"category":"linear",
       "symbol":"X","orderId":"1","side":"Sell","orderType":"Market","qty":"1",
       "price":"0","avgPrice":"0","orderStatus":"New","createdTime":"1"}]})",
                      c);
-  ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate);
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate);
   EXPECT_EQ(c.orders[0].has_price, 0);
   EXPECT_EQ(c.orders[0].has_average_price, 0);
 }
 
 TEST(BybitParser, ParsesExecutionTopic) {
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   Collector c;
   const auto r = run(p, R"({"topic":"execution","data":[{
       "category":"linear","execId":"EXEC-1","orderId":"BYBIT-1","symbol":"BTCUSDT",
@@ -335,7 +335,7 @@ TEST(BybitParser, ParsesExecutionTopic) {
       "feeCurrency":"USDT","isMaker":true,"execTime":"1786106096456"}]})",
                      c);
 
-  ASSERT_EQ(r.kind, VenueMessageKind::kTradeUpdate);
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kTradeUpdate);
   ASSERT_EQ(c.fills.size(), 1u);
   const auto& f = c.fills[0];
   EXPECT_EQ(f.trade_id.view(), "EXEC-1");
@@ -349,53 +349,53 @@ TEST(BybitParser, IsMakerAcceptsBooleanOrString) {
   // Bybit sends a JSON boolean on some paths and the string "true" on others;
   // the Python accepts both.
   for (const char* value : {"true", "\"true\""}) {
-    venue::bybit::BybitParser p;
+    exchanges::bybit::BybitParser p;
     Collector c;
     const std::string json =
         R"({"topic":"execution","data":[{"category":"linear","execId":"1",)"
         R"("orderId":"2","symbol":"X","side":"Buy","execQty":"1","execPrice":"1",)"
         R"("isMaker":)" +
         std::string(value) + R"(,"execTime":"1"}]})";
-    ASSERT_EQ(run(p, json, c).kind, VenueMessageKind::kTradeUpdate) << value;
+    ASSERT_EQ(run(p, json, c).kind, ExchangeMessageKind::kTradeUpdate) << value;
     ASSERT_EQ(c.fills.size(), 1u) << value;
     EXPECT_EQ(static_cast<Liquidity>(c.fills[0].liquidity), Liquidity::kMaker)
         << value;
   }
 
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   Collector c;
   ASSERT_EQ(run(p, R"({"topic":"execution","data":[{"category":"linear",
       "execId":"1","orderId":"2","symbol":"X","side":"Buy","execQty":"1",
       "execPrice":"1","isMaker":false,"execTime":"1"}]})",
                 c)
                 .kind,
-            VenueMessageKind::kTradeUpdate);
+            ExchangeMessageKind::kTradeUpdate);
   EXPECT_EQ(static_cast<Liquidity>(c.fills[0].liquidity), Liquidity::kTaker);
 }
 
 TEST(BybitParser, HandlesOpRepliesAndPong) {
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   Collector c;
   EXPECT_EQ(run(p, R"({"op":"pong","success":true})", c).kind,
-            VenueMessageKind::kHeartbeat);
+            ExchangeMessageKind::kHeartbeat);
   EXPECT_EQ(run(p, R"({"op":"auth","success":true,"req_id":"7"})", c).kind,
-            VenueMessageKind::kSessionEvent);
+            ExchangeMessageKind::kSessionEvent);
 
   const auto err =
       run(p, R"({"op":"auth","success":false,"ret_msg":"invalid sign","req_id":"8"})",
           c);
-  EXPECT_EQ(err.kind, VenueMessageKind::kRpcError);
+  EXPECT_EQ(err.kind, ExchangeMessageKind::kRpcError);
   EXPECT_EQ(err.rpc_error_text, "invalid sign");
   EXPECT_EQ(err.rpc_id, 8);
 }
 
 TEST(BybitBuilder, WsAuthSignatureMatchesTheReference) {
   // "GET/realtime" + expires, HMAC-SHA256, lowercase hex.
-  EXPECT_EQ(venue::bybit::BybitBuilder::ws_signature("test-secret", 1786106096123LL),
+  EXPECT_EQ(exchanges::bybit::BybitBuilder::ws_signature("test-secret", 1786106096123LL),
             "49a306f2e33774b3492b30b06948a6d1f6116e549323e6cfb3ab40f421755f9b");
 
-  venue::bybit::BybitBuilder b;
-  char buf[venue::bybit::kMaxRequestBytes];
+  exchanges::bybit::BybitBuilder b;
+  char buf[exchanges::bybit::kMaxRequestBytes];
   std::int64_t id = 0;
   const std::size_t n =
       b.ws_auth(buf, sizeof(buf), "my-key", "test-secret", 1786106096123LL, id);
@@ -405,7 +405,7 @@ TEST(BybitBuilder, WsAuthSignatureMatchesTheReference) {
   EXPECT_NE(msg.find("49a306f2e33774b3492b30b06948a6d1f6116e549323e6cfb3ab40f421755f9b"),
             std::string::npos)
       << msg;
-  // req_id is a STRING on Bybit, unlike every other venue's integer.
+  // req_id is a STRING on Bybit, unlike every other exchange's integer.
   EXPECT_NE(msg.find(R"("req_id":"1")"), std::string::npos) << msg;
 }
 
@@ -419,9 +419,9 @@ TEST(BybitBuilder, PlaceOrderBodyQuotesNumbers) {
   req.post_only = true;
   req.label = "chase-maker";
 
-  char buf[venue::bybit::kMaxRequestBytes];
+  char buf[exchanges::bybit::kMaxRequestBytes];
   const std::size_t n =
-      venue::bybit::BybitBuilder::place_order_body(buf, sizeof(buf), req);
+      exchanges::bybit::BybitBuilder::place_order_body(buf, sizeof(buf), req);
   const std::string body(buf, n);
 
   EXPECT_NE(body.find(R"("category":"linear")"), std::string::npos) << body;
@@ -434,7 +434,7 @@ TEST(BybitBuilder, PlaceOrderBodyQuotesNumbers) {
   req.post_only = false;
   req.order_type = OrderType::kMarket;
   const std::size_t m =
-      venue::bybit::BybitBuilder::place_order_body(buf, sizeof(buf), req);
+      exchanges::bybit::BybitBuilder::place_order_body(buf, sizeof(buf), req);
   EXPECT_NE(std::string(buf, m).find(R"("timeInForce":"IOC")"),
             std::string::npos);
 }
@@ -444,7 +444,7 @@ TEST(BybitBuilder, PlaceOrderBodyQuotesNumbers) {
 // ===========================================================================
 
 TEST(OkxParser, ParsesOrdersChannel) {
-  venue::okx::OkxParser p;
+  exchanges::okx::OkxParser p;
   Collector c;
   const auto r = run(p, R"({"arg":{"channel":"orders","instType":"SWAP"},
       "data":[{"instId":"BTC-USDT-SWAP","ordId":"OKX-1","clOrdId":"chase",
@@ -453,7 +453,7 @@ TEST(OkxParser, ParsesOrdersChannel) {
       "cTime":"1786106096123","uTime":"1786106096456"}]})",
                      c);
 
-  ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate) << (r.error ? r.error : "");
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate) << (r.error ? r.error : "");
   ASSERT_EQ(c.orders.size(), 1u);
   const auto& o = c.orders[0];
   EXPECT_EQ(o.exchange.view(), "okx");
@@ -468,26 +468,26 @@ TEST(OkxParser, ParsesOrdersChannel) {
 TEST(OkxParser, EmptyStringMeansAbsentNotZero) {
   // OKX sends "px":"" for an order with no price. Reading that as 0 would
   // create an order priced at zero.
-  venue::okx::OkxParser p;
+  exchanges::okx::OkxParser p;
   Collector c;
   const auto r = run(p, R"({"arg":{"channel":"orders"},"data":[{
       "instId":"BTC-USDT-SWAP","ordId":"1","side":"sell","ordType":"market",
       "sz":"1","px":"","accFillSz":"0","avgPx":"","state":"live","cTime":"1"}]})",
                      c);
-  ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate);
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate);
   EXPECT_EQ(c.orders[0].has_price, 0);
   EXPECT_EQ(c.orders[0].has_average_price, 0);
   EXPECT_EQ(c.orders[0].price_raw, 0);
 }
 
 TEST(OkxParser, PostOnlyIsAnOrderTypeNotAFlag) {
-  venue::okx::OkxParser p;
+  exchanges::okx::OkxParser p;
   Collector c;
   const auto r = run(p, R"({"arg":{"channel":"orders"},"data":[{
       "instId":"X","ordId":"1","side":"buy","ordType":"post_only","sz":"1",
       "px":"100","state":"live","cTime":"1"}]})",
                      c);
-  ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate);
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate);
   EXPECT_EQ(static_cast<OrderType>(c.orders[0].order_type), OrderType::kLimit);
 }
 
@@ -500,14 +500,14 @@ TEST(OkxParser, MapsEveryKnownStatus) {
       {"mmp_canceled", OrderStatus::kCancelled},
   };
   for (const auto& [state, expected] : cases) {
-    venue::okx::OkxParser p;
+    exchanges::okx::OkxParser p;
     Collector c;
     const std::string json =
         R"({"arg":{"channel":"orders"},"data":[{"instId":"X","ordId":"1",)"
         R"("side":"buy","ordType":"limit","sz":"1","px":"1","state":")" +
         state + R"(","cTime":"1"}]})";
     const auto r = run(p, json, c);
-    ASSERT_EQ(r.kind, VenueMessageKind::kOrderUpdate) << state;
+    ASSERT_EQ(r.kind, ExchangeMessageKind::kOrderUpdate) << state;
     EXPECT_FALSE(r.unknown_order_state) << state;
     EXPECT_EQ(static_cast<OrderStatus>(c.orders[0].status), expected) << state;
   }
@@ -515,8 +515,8 @@ TEST(OkxParser, MapsEveryKnownStatus) {
 
 TEST(OkxParser, FeesAreNormalisedToPositive) {
   // OKX reports a fee PAID as negative. Left signed, fee accounting would flip
-  // sign against the other three venues.
-  venue::okx::OkxParser p;
+  // sign against the other three exchanges.
+  exchanges::okx::OkxParser p;
   Collector c;
   const auto r = run(p, R"({"arg":{"channel":"fills"},"data":[{
       "instId":"BTC-USDT-SWAP","ordId":"OKX-1","tradeId":"T-1","side":"buy",
@@ -524,7 +524,7 @@ TEST(OkxParser, FeesAreNormalisedToPositive) {
       "execType":"M","ts":"1786106096456"}]})",
                      c);
 
-  ASSERT_EQ(r.kind, VenueMessageKind::kTradeUpdate);
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kTradeUpdate);
   ASSERT_EQ(c.fills.size(), 1u);
   EXPECT_EQ(c.fills[0].fee_raw, D("0.0123").raw()) << "fee must mean cost";
   EXPECT_EQ(static_cast<Liquidity>(c.fills[0].liquidity), Liquidity::kMaker);
@@ -535,62 +535,62 @@ TEST(OkxParser, ExecTypeMOnlyIsMaker) {
        std::vector<std::pair<std::string, Liquidity>>{
            {"M", Liquidity::kMaker}, {"T", Liquidity::kTaker},
            {"", Liquidity::kTaker}}) {
-    venue::okx::OkxParser p;
+    exchanges::okx::OkxParser p;
     Collector c;
     const std::string json =
         R"({"arg":{"channel":"fills"},"data":[{"instId":"X","ordId":"1",)"
         R"("tradeId":"T","side":"buy","fillSz":"1","fillPx":"1","fee":"0",)"
         R"("execType":")" +
         exec_type + R"(","ts":"1"}]})";
-    ASSERT_EQ(run(p, json, c).kind, VenueMessageKind::kTradeUpdate) << exec_type;
+    ASSERT_EQ(run(p, json, c).kind, ExchangeMessageKind::kTradeUpdate) << exec_type;
     EXPECT_EQ(static_cast<Liquidity>(c.fills[0].liquidity), expected)
         << "execType=" << exec_type;
   }
 }
 
 TEST(OkxParser, FallsBackToBillId) {
-  venue::okx::OkxParser p;
+  exchanges::okx::OkxParser p;
   Collector c;
   const auto r = run(p, R"({"arg":{"channel":"fills"},"data":[{
       "instId":"X","ordId":"1","tradeId":"","billId":"BILL-9","side":"buy",
       "fillSz":"1","fillPx":"1","fee":"0","execType":"T","ts":"1"}]})",
                      c);
-  ASSERT_EQ(r.kind, VenueMessageKind::kTradeUpdate);
+  ASSERT_EQ(r.kind, ExchangeMessageKind::kTradeUpdate);
   ASSERT_EQ(c.fills.size(), 1u);
   EXPECT_EQ(c.fills[0].trade_id.view(), "BILL-9");
 }
 
 TEST(OkxParser, PlainTextHeartbeatNeverReachesTheJsonParser) {
   // OKX's liveness exchange is the literal text "ping"/"pong", not JSON.
-  venue::okx::OkxParser p;
+  exchanges::okx::OkxParser p;
   Collector c;
-  EXPECT_EQ(run(p, "ping", c).kind, VenueMessageKind::kHeartbeat);
-  EXPECT_EQ(run(p, "pong", c).kind, VenueMessageKind::kHeartbeat);
-  EXPECT_TRUE(venue::okx::is_plain_text_heartbeat("ping"));
-  EXPECT_FALSE(venue::okx::is_plain_text_heartbeat("{}"));
+  EXPECT_EQ(run(p, "ping", c).kind, ExchangeMessageKind::kHeartbeat);
+  EXPECT_EQ(run(p, "pong", c).kind, ExchangeMessageKind::kHeartbeat);
+  EXPECT_TRUE(exchanges::okx::is_plain_text_heartbeat("ping"));
+  EXPECT_FALSE(exchanges::okx::is_plain_text_heartbeat("{}"));
 }
 
 TEST(OkxParser, EventMessagesAreSessionEventsNotData) {
-  venue::okx::OkxParser p;
+  exchanges::okx::OkxParser p;
   Collector c;
   EXPECT_EQ(run(p, R"({"event":"login","code":"0","msg":""})", c).kind,
-            VenueMessageKind::kSessionEvent);
+            ExchangeMessageKind::kSessionEvent);
   EXPECT_EQ(run(p, R"({"event":"subscribe","arg":{"channel":"orders"}})", c).kind,
-            VenueMessageKind::kSessionEvent);
+            ExchangeMessageKind::kSessionEvent);
 
   const auto err =
       run(p, R"({"event":"error","code":"60009","msg":"Login failed."})", c);
-  EXPECT_EQ(err.kind, VenueMessageKind::kRpcError);
+  EXPECT_EQ(err.kind, ExchangeMessageKind::kRpcError);
   EXPECT_EQ(err.rpc_error_text, "Login failed.");
 }
 
 TEST(OkxBuilder, WsLoginSignatureMatchesTheReference) {
   // base64, not hex -- OKX differs from Bybit and Binance here.
-  EXPECT_EQ(venue::okx::OkxBuilder::ws_signature("test-secret", 1786106096LL),
+  EXPECT_EQ(exchanges::okx::OkxBuilder::ws_signature("test-secret", 1786106096LL),
             "uSMzCIUzpm/NcxhJsJU9W9aQXU+UCIYkiXMd+xd3TfQ=");
 
-  char buf[venue::okx::kMaxRequestBytes];
-  const std::size_t n = venue::okx::OkxBuilder::ws_login(
+  char buf[exchanges::okx::kMaxRequestBytes];
+  const std::size_t n = exchanges::okx::OkxBuilder::ws_login(
       buf, sizeof(buf), "my-key", "my-passphrase", "test-secret", 1786106096LL);
   ASSERT_GT(n, 0u);
   const std::string msg(buf, n);
@@ -613,8 +613,8 @@ TEST(OkxBuilder, PlaceOrderBody) {
   req.price = D("64000.5");
   req.label = "chase";
 
-  char buf[venue::okx::kMaxRequestBytes];
-  std::size_t n = venue::okx::OkxBuilder::place_order_body(buf, sizeof(buf), req);
+  char buf[exchanges::okx::kMaxRequestBytes];
+  std::size_t n = exchanges::okx::OkxBuilder::place_order_body(buf, sizeof(buf), req);
   std::string body(buf, n);
   EXPECT_NE(body.find(R"("tdMode":"cross")"), std::string::npos) << body;
   EXPECT_NE(body.find(R"("ordType":"limit")"), std::string::npos) << body;
@@ -624,19 +624,19 @@ TEST(OkxBuilder, PlaceOrderBody) {
 
   // post_only replaces ordType rather than adding a flag.
   req.post_only = true;
-  n = venue::okx::OkxBuilder::place_order_body(buf, sizeof(buf), req);
+  n = exchanges::okx::OkxBuilder::place_order_body(buf, sizeof(buf), req);
   body = std::string(buf, n);
   EXPECT_NE(body.find(R"("ordType":"post_only")"), std::string::npos) << body;
   EXPECT_EQ(body.find(R"("post_only":true)"), std::string::npos) << body;
 }
 
 TEST(OkxBuilder, SubscribeScopesByInstType) {
-  const std::string_view channels[] = {venue::okx::kOrdersChannel,
-                                       venue::okx::kFillsChannel,
-                                       venue::okx::kAccountChannel};
-  char buf[venue::okx::kMaxRequestBytes];
+  const std::string_view channels[] = {exchanges::okx::kOrdersChannel,
+                                       exchanges::okx::kFillsChannel,
+                                       exchanges::okx::kAccountChannel};
+  char buf[exchanges::okx::kMaxRequestBytes];
   const std::size_t n =
-      venue::okx::OkxBuilder::ws_subscribe(buf, sizeof(buf), channels, 3);
+      exchanges::okx::OkxBuilder::ws_subscribe(buf, sizeof(buf), channels, 3);
   const std::string msg(buf, n);
   EXPECT_NE(msg.find(R"({"channel":"orders","instType":"SWAP"})"),
             std::string::npos)
@@ -646,42 +646,42 @@ TEST(OkxBuilder, SubscribeScopesByInstType) {
 }
 
 // ===========================================================================
-// Cross-venue invariants
+// Cross-exchange invariants
 // ===========================================================================
 
-TEST(AllPerpVenues, RejectMalformedJsonWithoutThrowing) {
-  venue::binance::BinanceParser bn;
-  venue::bybit::BybitParser by;
-  venue::okx::OkxParser ok;
+TEST(AllPerpExchanges, RejectMalformedJsonWithoutThrowing) {
+  exchanges::binance::BinanceParser bn;
+  exchanges::bybit::BybitParser by;
+  exchanges::okx::OkxParser ok;
   Collector c;
 
   for (const char* bad : {"", "{", "not json", R"({"topic":)"}) {
-    EXPECT_EQ(run(bn, bad, c).kind, VenueMessageKind::kParseError) << bad;
-    EXPECT_EQ(run(by, bad, c).kind, VenueMessageKind::kParseError) << bad;
+    EXPECT_EQ(run(bn, bad, c).kind, ExchangeMessageKind::kParseError) << bad;
+    EXPECT_EQ(run(by, bad, c).kind, ExchangeMessageKind::kParseError) << bad;
     // OKX must not mistake an empty frame for its plain-text heartbeat.
-    EXPECT_EQ(run(ok, bad, c).kind, VenueMessageKind::kParseError) << bad;
+    EXPECT_EQ(run(ok, bad, c).kind, ExchangeMessageKind::kParseError) << bad;
   }
 }
 
-TEST(AllPerpVenues, RejectBuffersWithoutSimdjsonPadding) {
+TEST(AllPerpExchanges, RejectBuffersWithoutSimdjsonPadding) {
   Collector c;
   std::string json = R"({"topic":"order","data":[]})";
 
-  venue::bybit::BybitParser by;
+  exchanges::bybit::BybitParser by;
   EXPECT_EQ(by.parse(json.data(), json.size(), json.size(), c).kind,
-            VenueMessageKind::kParseError);
+            ExchangeMessageKind::kParseError);
 
-  venue::binance::BinanceParser bn;
+  exchanges::binance::BinanceParser bn;
   EXPECT_EQ(bn.parse(json.data(), json.size(), json.size(), c).kind,
-            VenueMessageKind::kParseError);
+            ExchangeMessageKind::kParseError);
 }
 
-TEST(AllPerpVenues, RejectOverlongInstrumentNames) {
+TEST(AllPerpExchanges, RejectOverlongInstrumentNames) {
   // A truncated symbol would route an order to the wrong contract.
   const std::string long_symbol(transport::kInstrumentCap + 1, 'X');
   Collector c;
 
-  venue::bybit::BybitParser by;
+  exchanges::bybit::BybitParser by;
   const std::string bybit_json =
       R"({"topic":"order","data":[{"category":"linear","symbol":")" +
       long_symbol +
@@ -689,7 +689,7 @@ TEST(AllPerpVenues, RejectOverlongInstrumentNames) {
   EXPECT_EQ(run(by, bybit_json, c).emitted, 0u);
   EXPECT_TRUE(c.orders.empty());
 
-  venue::okx::OkxParser ok;
+  exchanges::okx::OkxParser ok;
   const std::string okx_json =
       R"({"arg":{"channel":"orders"},"data":[{"instId":")" + long_symbol +
       R"(","ordId":"1","side":"buy","ordType":"limit","sz":"1","px":"1","state":"live","cTime":"1"}]})";
@@ -697,10 +697,10 @@ TEST(AllPerpVenues, RejectOverlongInstrumentNames) {
   EXPECT_TRUE(c.orders.empty());
 }
 
-TEST(AllPerpVenues, SequenceNumbersAdvanceMonotonically) {
+TEST(AllPerpExchanges, SequenceNumbersAdvanceMonotonically) {
   // Downstream detects gaps with these; a repeated sequence number would hide
   // a dropped message.
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   Collector c;
   const std::string json =
       R"({"topic":"order","data":[)"

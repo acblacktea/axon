@@ -33,7 +33,7 @@ OrderStore::OrderStore(std::shared_ptr<OrderRepository> repository)
 void OrderStore::add_order(models::Order order) {
   // Force PENDING with zero filled regardless of what the placement response
   // said. See (2) in the header: a market order that comes back already FILLED
-  // would otherwise make the first venue push look like "no change", and the
+  // would otherwise make the first exchange push look like "no change", and the
   // strategy would never be told it filled.
   order.status = models::OrderStatus::kPending;
   order.filled_amount = core::Qty{};
@@ -63,23 +63,23 @@ std::string OrderStore::submission_key(const std::string& exchange, std::string_
 
 void OrderStore::register_submission(const std::string& exchange,
                                      const models::OrderRequest& request) {
-  const auto key = submission_key(exchange, request.venue_client_id());
+  const auto key = submission_key(exchange, request.exchange_client_id());
   submissions_[key] = Submission{request.internal_order_id, request.strategy_id};
   submission_by_internal_[request.internal_order_id] = key;
 }
 
 void OrderStore::forget_submission(const std::string& exchange,
                                    const models::OrderRequest& request) {
-  submissions_.erase(submission_key(exchange, request.venue_client_id()));
+  submissions_.erase(submission_key(exchange, request.exchange_client_id()));
   submission_by_internal_.erase(request.internal_order_id);
 }
 
 std::optional<OrderStore::Submission> OrderStore::find_submission(
-    const std::string& exchange, std::string_view venue_client_id) const {
-  if (venue_client_id.empty()) {
+    const std::string& exchange, std::string_view exchange_client_id) const {
+  if (exchange_client_id.empty()) {
     return std::nullopt;
   }
-  const auto it = submissions_.find(submission_key(exchange, venue_client_id));
+  const auto it = submissions_.find(submission_key(exchange, exchange_client_id));
   if (it == submissions_.end()) {
     return std::nullopt;
   }
@@ -122,7 +122,7 @@ void OrderStore::update_order(models::Order order) {
                              existing->status != order.status ||
                              existing->filled_amount != order.filled_amount;
 
-  // The venue does not know about our internal ids; carry them forward.
+  // The exchange does not know about our internal ids; carry them forward.
   if (existing.has_value()) {
     if (!order.strategy_id.has_value() && existing->strategy_id.has_value()) {
       order.strategy_id = existing->strategy_id;
@@ -191,7 +191,7 @@ void OrderStore::update_order(models::Order order) {
 void OrderStore::update_from_ws(models::Order order) {
   const std::string id = order.order_id;
 
-  // The gap between placement and the venue's first push is the ack latency --
+  // The gap between placement and the exchange's first push is the ack latency --
   // how long the feed took to confirm an order we already sent.
   if (first_ws_seen_.insert(id).second) {
     const auto it = submit_monotonic_.find(id);
@@ -234,7 +234,7 @@ std::vector<models::Order> OrderStore::active_orders() const {
 }
 
 void OrderStore::reconcile(const std::vector<models::Order>& orders) {
-  AXON_LOG_INFO(log(), "reconciling {} orders from the venue", orders.size());
+  AXON_LOG_INFO(log(), "reconciling {} orders from the exchange", orders.size());
   for (const auto& order : orders) {
     if (const auto it = cache_.find(order.order_id); it != cache_.end()) {
       const auto& existing = it->second;

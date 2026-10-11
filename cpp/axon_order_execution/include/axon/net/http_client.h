@@ -1,18 +1,18 @@
 // Non-blocking HTTP/1.1 client over the same TLS stream the WebSocket uses.
 //
 // Replaces util/http.py. Needed for three things the WebSocket cannot do:
-// Binance's listenKey, order entry on the three perpetual venues, and every
+// Binance's listenKey, order entry on the three perpetual exchanges, and every
 // reconciliation snapshot.
 //
 // ASYNC BY SUBMISSION, not by coroutine. submit() queues a request and returns
 // an id; poll() drives the sockets and invokes the completion callback when a
 // response is whole. That keeps the engine's single busy-poll loop as the only
 // scheduler in the process -- a blocking REST call inside it would stall every
-// venue feed for the duration of an internet round trip.
+// exchange feed for the duration of an internet round trip.
 //
 // CONNECTIONS ARE KEPT ALIVE, one per host. This is worth more than it looks:
 // a fresh TLS handshake costs two extra round trips, so a per-request
-// connection would triple the latency of every order on the perp venues.
+// connection would triple the latency of every order on the perp exchanges.
 // HTTP/1.1 without pipelining means one request in flight per connection, so
 // the pool holds several per host.
 //
@@ -40,14 +40,14 @@ struct HttpHeader {
 
 struct HttpRequest {
   std::string method = "GET";
-  // Includes the query string. Already signed where the venue signs the query.
+  // Includes the query string. Already signed where the exchange signs the query.
   std::string path = "/";
   std::string host;
   std::uint16_t port = 443;
   bool use_tls = true;
   std::vector<HttpHeader> headers;
   std::string body;
-  // Gives up after this long. A venue that stops responding mid-request must
+  // Gives up after this long. An exchange that stops responding mid-request must
   // not hold a slot forever.
   double timeout_seconds = 10.0;
 };
@@ -69,7 +69,7 @@ class HttpClient {
   using Callback = std::function<void(const HttpResponse&)>;
 
   // `tls` must outlive the client. `max_connections_per_host` bounds how many
-  // requests can be in flight to one venue; beyond that they queue.
+  // requests can be in flight to one exchange; beyond that they queue.
   explicit HttpClient(const TlsContext* tls,
                       std::size_t max_connections_per_host = 4);
   ~HttpClient();
@@ -100,7 +100,7 @@ class HttpClient {
 // socket. Returns the number of bytes the head occupied, or 0 if it is not yet
 // complete.
 //
-// `content_length` is -1 when the response is chunked, which the four venues
+// `content_length` is -1 when the response is chunked, which the four exchanges
 // do use for larger snapshots.
 std::size_t parse_http_head(std::string_view data, int& status,
                             std::vector<HttpHeader>& headers,

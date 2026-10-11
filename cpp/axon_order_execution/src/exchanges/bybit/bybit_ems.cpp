@@ -2,7 +2,9 @@
 
 #include <string>
 
-namespace axon::ems::bybit {
+namespace axon::exchanges::bybit {
+
+using namespace axon::ems;
 namespace {
 
 std::size_t build_place(char* buf, std::size_t cap,
@@ -30,14 +32,14 @@ std::size_t build_modify(char* buf, std::size_t cap,
 
 // Acceptance only. The authoritative order state arrives on the feed a moment
 // later, so no Order is constructed here.
-OrderResult interpret_reply(std::string_view, const models::OrderRequest&, VenueState&) {
+OrderResult interpret_reply(std::string_view, const models::OrderRequest&, ExchangeState&) {
   return OrderResult{true, std::nullopt, {}};
 }
 
 }  // namespace
 
-const VenueOps& ops() {
-  static const VenueOps kOps{
+const ExchangeOps& ems_ops() {
+  static const ExchangeOps kOps{
       "bybit",
       /*own_trade_connection=*/true,  // /v5/trade, with its own op:"auth"
       /*needs_symbol=*/true,
@@ -46,4 +48,4 @@ const VenueOps& ops() {
   return kOps;
 }
 
-}  // namespace axon::ems::bybit
+}  // namespace axon::exchanges::bybit

@@ -306,9 +306,9 @@ void bench_shm_ring() {
 }
 
 // The comparison the whole architecture rests on.
-// The real receive path for one venue, end to end.
-void bench_venue() {
-  section("Deribit venue layer (real feed shapes)");
+// The real receive path for one exchange, end to end.
+void bench_exchange() {
+  section("Deribit exchange layer (real feed shapes)");
 
   const std::string order_frame =
       R"({"jsonrpc":"2.0","method":"subscription","params":{"channel":"user.orders.BTC-27JUN25-100000-C.raw",)"
@@ -329,9 +329,9 @@ void bench_venue() {
   // Padded exactly as the receive buffer will be.
   std::string padded(order_frame);
   const std::size_t len = padded.size();
-  padded.resize(len + venue::kJsonPadding, '\0');
+  padded.resize(len + exchanges::kJsonPadding, '\0');
 
-  venue::deribit::DeribitParser parser;
+  exchanges::deribit::DeribitParser parser;
   Sink sink;
   report_amortised("parse order update -> OrderUpdateMsg",
                    measure_amortised(2000, 500, [&] {
@@ -347,7 +347,7 @@ void bench_venue() {
       R"("timestamp":1786106096456,"index_price":64000.5,"mark_price":64000.6}]}})";
   std::string trade_padded(trade_frame);
   const std::size_t trade_len = trade_padded.size();
-  trade_padded.resize(trade_len + venue::kJsonPadding, '\0');
+  trade_padded.resize(trade_len + exchanges::kJsonPadding, '\0');
 
   report_amortised("parse trade frame -> FillMsg",
                    measure_amortised(2000, 500, [&] {
@@ -357,7 +357,7 @@ void bench_venue() {
                               .emitted);
                    }));
 
-  venue::deribit::DeribitBuilder builder;
+  exchanges::deribit::DeribitBuilder builder;
   models::OrderRequest req;
   req.instrument = "BTC-27JUN25-100000-C";
   req.side = models::OrderSide::kBuy;
@@ -367,7 +367,7 @@ void bench_venue() {
   req.label = "chase-maker";
   req.post_only = true;
 
-  char out[venue::deribit::kMaxRequestBytes];
+  char out[exchanges::deribit::kMaxRequestBytes];
   std::int64_t id = 0;
   report_amortised("build private/buy request",
                    measure_amortised(2000, 500, [&] {
@@ -385,9 +385,9 @@ void bench_venue() {
               static_cast<unsigned long long>(sink.orders + sink.fills));
 }
 
-// All four venues on their own real feed shape, so the numbers are comparable.
-void bench_all_venues() {
-  section("order-update parse, all four venues");
+// All four exchanges on their own real feed shape, so the numbers are comparable.
+void bench_all_exchanges() {
+  section("order-update parse, all four exchanges");
 
   struct Sink {
     std::uint64_t n = 0;
@@ -399,7 +399,7 @@ void bench_all_venues() {
 
   auto pad = [](std::string s) {
     const std::size_t len = s.size();
-    s.resize(len + venue::kJsonPadding, '\0');
+    s.resize(len + exchanges::kJsonPadding, '\0');
     return std::pair<std::string, std::size_t>{std::move(s), len};
   };
 
@@ -430,10 +430,10 @@ void bench_all_venues() {
       R"("avgPx":"64000.25","state":"partially_filled","cTime":"1786106096123",)"
       R"("uTime":"1786106096456"}]})");
 
-  venue::deribit::DeribitParser deribit;
-  venue::binance::BinanceParser binance;
-  venue::bybit::BybitParser bybit;
-  venue::okx::OkxParser okx;
+  exchanges::deribit::DeribitParser deribit;
+  exchanges::binance::BinanceParser binance;
+  exchanges::bybit::BybitParser bybit;
+  exchanges::okx::OkxParser okx;
 
   report_amortised("deribit (options, bare JSON numbers)",
                    measure_amortised(2000, 500, [&] {
@@ -620,8 +620,8 @@ int main() {
   bench_spsc_ring();
   bench_shm_ring();
   bench_websocket();
-  bench_venue();
-  bench_all_venues();
+  bench_exchange();
+  bench_all_exchanges();
   bench_hot_vs_json();
 
   std::printf("\n");

@@ -1,10 +1,10 @@
-// Bybit: everything the OMS needs from this venue.
+// Bybit: everything the OMS needs from this exchange.
 //
 // Bybit V5 linear perpetuals: the private stream for the feed, and a second
 // connection to /v5/trade -- with its own op:"auth" -- for order entry.
 //
-// Moved out of venue_session.cpp and venue_rest.cpp so each venue's
-// protocol lives in one place, as it does on the EMS side. Only venue() is
+// Moved out of exchange_session.cpp and exchange_rest.cpp so each exchange's
+// protocol lives in one place, as it does on the EMS side. Only oms_exchange() is
 // visible outside this file.
 
 #include "axon/exchanges/bybit/bybit_oms.h"
@@ -22,9 +22,11 @@
 #include "axon/util/metrics.h"
 #include "axon/exchanges/bybit/bybit_builder.h"
 #include "axon/exchanges/bybit/bybit_parser.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
-namespace axon::oms::bybit {
+namespace axon::exchanges::bybit {
+
+using namespace axon::oms;
 namespace {
 
 auto& log() {
@@ -32,15 +34,15 @@ auto& log() {
   return logger;
 }
 
-using detail::doc;
-using detail::first_of_array_at;
-using detail::http_error;
-using detail::monotonic_seconds;
-using detail::now_ms;
-using detail::parse_array_at;
-using detail::parse_object_at;
-using detail::parse_string_id;
-using detail::url_encode;
+using oms::detail::doc;
+using oms::detail::first_of_array_at;
+using oms::detail::http_error;
+using oms::detail::monotonic_seconds;
+using oms::detail::now_ms;
+using oms::detail::parse_array_at;
+using oms::detail::parse_object_at;
+using oms::detail::parse_string_id;
+using oms::detail::url_encode;
 
 // ===========================================================================
 // The private feed session
@@ -48,19 +50,19 @@ using detail::url_encode;
 // ===========================================================================
 // Bybit
 // ===========================================================================
-class BybitSession final : public VenueSession {
+class BybitSession final : public ExchangeSession {
  public:
-  using VenueSession::VenueSession;
+  using ExchangeSession::ExchangeSession;
 
  protected:
   std::string host() const override {
-    return std::string(exchange_.is_testnet() ? venue::bybit::kTestnetHost
-                                              : venue::bybit::kProductionHost);
+    return std::string(exchange_.is_testnet() ? exchanges::bybit::kTestnetHost
+                                              : exchanges::bybit::kProductionHost);
   }
-  std::string path() const override { return std::string(venue::bybit::kPath); }
+  std::string path() const override { return std::string(exchanges::bybit::kPath); }
 
   bool send_authentication() override {
-    char buf[venue::bybit::kMaxRequestBytes];
+    char buf[exchanges::bybit::kMaxRequestBytes];
     // Expiry a few seconds out. Bybit rejects a signature whose expiry has
     // passed, and clock skew is the usual cause of a login that works locally
     // and fails in production.
@@ -72,10 +74,10 @@ class BybitSession final : public VenueSession {
   }
 
   bool send_subscriptions() override {
-    const std::string_view topics[] = {venue::bybit::kOrderTopic,
-                                       venue::bybit::kExecutionTopic,
-                                       venue::bybit::kWalletTopic};
-    char buf[venue::bybit::kMaxRequestBytes];
+    const std::string_view topics[] = {exchanges::bybit::kOrderTopic,
+                                       exchanges::bybit::kExecutionTopic,
+                                       exchanges::bybit::kWalletTopic};
+    char buf[exchanges::bybit::kMaxRequestBytes];
     std::int64_t id = 0;
     const std::size_t n = builder_.ws_subscribe(buf, sizeof(buf), topics, 3, id);
     subscribe_id_ = id;
@@ -87,7 +89,7 @@ class BybitSession final : public VenueSession {
     Sink sink{this};
     const auto result = parser_.parse(reinterpret_cast<const char*>(data), len,
                                       capacity, sink);
-    if (result.kind == venue::VenueMessageKind::kSessionEvent) {
+    if (result.kind == exchanges::ExchangeMessageKind::kSessionEvent) {
       // Bybit acknowledges auth and subscribe with the same shape; the req_id
       // tells them apart.
       if (result.rpc_id == auth_id_) {
@@ -95,7 +97,7 @@ class BybitSession final : public VenueSession {
       } else if (result.rpc_id == subscribe_id_) {
         on_subscribe_reply(true, {});
       }
-    } else if (result.kind == venue::VenueMessageKind::kRpcError) {
+    } else if (result.kind == exchanges::ExchangeMessageKind::kRpcError) {
       const std::string text(result.rpc_error_text);
       if (result.rpc_id == auth_id_) {
         on_auth_reply(false, text);
@@ -120,8 +122,8 @@ class BybitSession final : public VenueSession {
     }
   };
 
-  venue::bybit::BybitParser parser_;
-  venue::bybit::BybitBuilder builder_;
+  exchanges::bybit::BybitParser parser_;
+  exchanges::bybit::BybitBuilder builder_;
   std::int64_t auth_id_ = -1;
   std::int64_t subscribe_id_ = -1;
 };
@@ -138,27 +140,27 @@ class BybitSession final : public VenueSession {
 //
 // Everything inbound is a reply to something we sent, so handle_frame extracts
 // the correlation id and hands the raw bytes to on_rpc_reply. The EMS knows
-// each venue's result shape; the session does not and should not.
+// each exchange's result shape; the session does not and should not.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
 // Bybit /v5/trade
 // ---------------------------------------------------------------------------
-class BybitTradeSession final : public VenueSession {
+class BybitTradeSession final : public ExchangeSession {
  public:
-  using VenueSession::VenueSession;
+  using ExchangeSession::ExchangeSession;
 
  protected:
   std::string host() const override {
-    return std::string(exchange_.is_testnet() ? venue::bybit::kTestnetHost
-                                              : venue::bybit::kProductionHost);
+    return std::string(exchange_.is_testnet() ? exchanges::bybit::kTestnetHost
+                                              : exchanges::bybit::kProductionHost);
   }
   std::string path() const override {
-    return std::string(venue::bybit::kTradePath);
+    return std::string(exchanges::bybit::kTradePath);
   }
 
   bool send_authentication() override {
-    char buf[venue::bybit::kMaxRequestBytes];
+    char buf[exchanges::bybit::kMaxRequestBytes];
     const std::int64_t expires = core::wall_clock_ns() / 1'000'000LL + 10'000LL;
     const std::size_t n =
         builder_.ws_auth(buf, sizeof(buf), exchange_.api_key,
@@ -183,10 +185,10 @@ class BybitTradeSession final : public VenueSession {
       return;
     }
     last_ping_ = now;
-    // The venue's reply is what actually proves the socket is alive; sending
+    // The exchange's reply is what actually proves the socket is alive; sending
     // alone would not, which is why the watchdog measures inbound silence.
     char buf[64];
-    const std::size_t n = venue::bybit::BybitBuilder::ws_ping(buf, sizeof(buf));
+    const std::size_t n = exchanges::bybit::BybitBuilder::ws_ping(buf, sizeof(buf));
     if (n > 0) {
       send_raw(std::string_view(buf, n));
     }
@@ -226,8 +228,8 @@ class BybitTradeSession final : public VenueSession {
   }
 
  private:
-  venue::Document doc_{64 * 1024};
-  venue::bybit::BybitBuilder builder_;
+  exchanges::Document doc_{64 * 1024};
+  exchanges::bybit::BybitBuilder builder_;
   std::int64_t auth_id_ = -1;
   double last_ping_ = 0.0;
 };
@@ -238,10 +240,10 @@ class BybitTradeSession final : public VenueSession {
 // ===========================================================================
 // Bybit v5
 // ===========================================================================
-class BybitRestImpl final : public VenueRest {
+class BybitRestImpl final : public ExchangeRest {
  public:
-  BybitRestImpl(ExchangeConfig exchange, net::HttpClient* http)
-      : exchange_(std::move(exchange)), http_(http) {}
+  BybitRestImpl(ExchangeConfig exchange_config, net::HttpClient* http)
+      : exchange_(std::move(exchange_config)), http_(http) {}
 
   const std::string& exchange_name() const override { return exchange_.name; }
 
@@ -260,7 +262,7 @@ class BybitRestImpl final : public VenueRest {
              return;
            }
            std::optional<models::Ticker> ticker;
-           list->for_each_object([&](venue::Object& d) {
+           list->for_each_object([&](exchanges::Object& d) {
              if (ticker.has_value()) {
                return;
              }
@@ -324,9 +326,9 @@ class BybitRestImpl final : public VenueRest {
   }
 
  private:
-  static std::optional<models::Order> parse_order(venue::Object& d);
-  static std::optional<models::Fill> parse_fill(venue::Object& d);
-  static std::optional<models::Position> parse_position(venue::Object& d);
+  static std::optional<models::Order> parse_order(exchanges::Object& d);
+  static std::optional<models::Fill> parse_fill(exchanges::Object& d);
+  static std::optional<models::Position> parse_position(exchanges::Object& d);
 
   // `signed_payload` is the query string for a GET and the body for a POST --
   // Bybit signs whichever the request carries, and mixing them up produces a
@@ -336,8 +338,8 @@ class BybitRestImpl final : public VenueRest {
             std::function<void(const net::HttpResponse&)> handler) {
     net::HttpRequest req;
     req.method = method;
-    req.host = std::string(exchange_.is_testnet() ? venue::bybit::kTestnetRestHost
-                                                  : venue::bybit::kProductionRestHost);
+    req.host = std::string(exchange_.is_testnet() ? exchanges::bybit::kTestnetRestHost
+                                                  : exchanges::bybit::kProductionRestHost);
     req.path = path;
     req.body = body;
     if (authenticated) {
@@ -361,7 +363,7 @@ class BybitRestImpl final : public VenueRest {
   net::HttpClient* http_;
 };
 
-std::optional<models::Order> BybitRestImpl::parse_order(venue::Object& d) {
+std::optional<models::Order> BybitRestImpl::parse_order(exchanges::Object& d) {
   models::Order o;
   o.exchange = "bybit";
   const auto id = d["orderId"].as_string();
@@ -383,7 +385,7 @@ std::optional<models::Order> BybitRestImpl::parse_order(venue::Object& d) {
     o.price = price;
   }
   o.status =
-      venue::bybit::map_order_status(d["orderStatus"].as_string().value_or("New")).status;
+      exchanges::bybit::map_order_status(d["orderStatus"].as_string().value_or("New")).status;
   const auto created = d["createdTime"].as_int();
   const auto updated = d["updatedTime"].as_int();
   o.created_at = core::Timestamp::from_millis(created.value_or(0));
@@ -397,7 +399,7 @@ std::optional<models::Order> BybitRestImpl::parse_order(venue::Object& d) {
   return o;
 }
 
-std::optional<models::Fill> BybitRestImpl::parse_fill(venue::Object& d) {
+std::optional<models::Fill> BybitRestImpl::parse_fill(exchanges::Object& d) {
   models::Fill f;
   f.exchange = "bybit";
   const auto id = d["execId"].as_string();
@@ -426,7 +428,7 @@ std::optional<models::Fill> BybitRestImpl::parse_fill(venue::Object& d) {
   return f;
 }
 
-std::optional<models::Position> BybitRestImpl::parse_position(venue::Object& d) {
+std::optional<models::Position> BybitRestImpl::parse_position(exchanges::Object& d) {
   models::Position p;
   p.exchange = "bybit";
   const auto symbol = d["symbol"].as_string();
@@ -447,38 +449,39 @@ std::optional<models::Position> BybitRestImpl::parse_position(venue::Object& d) 
   return p;
 }
 
-std::unique_ptr<VenueSession> make_session(const ExchangeConfig& exchange,
+std::unique_ptr<ExchangeSession> make_session(const ExchangeConfig& exchange_config,
                                            const WebSocketConfig& ws_config,
                                            const RuntimeConfig& runtime,
-                                           const net::TlsContext* tls, VenueRest*,
-                                           VenueSessionHandlers handlers) {
-  return std::make_unique<BybitSession>(exchange, ws_config, runtime, tls,
+                                           const net::TlsContext* tls, ExchangeRest*,
+                                           ExchangeSessionHandlers handlers) {
+  return std::make_unique<BybitSession>(exchange_config, ws_config, runtime, tls,
                                                   std::move(handlers));
 }
 
-std::unique_ptr<VenueSession> make_trade_session(const ExchangeConfig& exchange,
+std::unique_ptr<ExchangeSession> make_trade_session(const ExchangeConfig& exchange_config,
                                                  const WebSocketConfig& ws_config,
                                                  const RuntimeConfig& runtime,
                                                  const net::TlsContext* tls,
-                                                 VenueSessionHandlers handlers) {
-  return std::make_unique<BybitTradeSession>(exchange, ws_config, runtime, tls,
+                                                 ExchangeSessionHandlers handlers) {
+  return std::make_unique<BybitTradeSession>(exchange_config, ws_config, runtime, tls,
                                                   std::move(handlers));
 }
 
-std::unique_ptr<VenueRest> make_rest(const ExchangeConfig& exchange, net::HttpClient* http) {
-  return std::make_unique<BybitRestImpl>(exchange, http);
+std::unique_ptr<ExchangeRest> make_rest(const ExchangeConfig& exchange_config,
+                                        net::HttpClient* http) {
+  return std::make_unique<BybitRestImpl>(exchange_config, http);
 }
 
 }  // namespace
 
-const OmsVenue& venue() {
-  static const OmsVenue kVenue{
+const OmsExchange& oms_exchange() {
+  static const OmsExchange kExchange{
       "bybit",
       make_session,
       make_trade_session,
       make_rest,
   };
-  return kVenue;
+  return kExchange;
 }
 
-}  // namespace axon::oms::bybit
+}  // namespace axon::exchanges::bybit

@@ -19,7 +19,7 @@
 //
 // COST, because it is a large share of a 10us budget: an AES-GCM record with
 // AES-NI runs around 0.5-2us each way on a small message. That is 10-40% of
-// the target and it is not optional -- every venue is wss:// only. What IS
+// the target and it is not optional -- every exchange is wss:// only. What IS
 // controllable is the number of records: one SSL_write per logical message,
 // never per field.
 //
@@ -67,7 +67,7 @@ class TlsContext {
   TlsContext& operator=(TlsContext&&) noexcept;
 
   // Loads the platform's default trust store. Required before connecting to a
-  // real venue; throws if no trust store can be found, rather than silently
+  // real exchange; throws if no trust store can be found, rather than silently
   // continuing with an empty one.
   void use_default_trust_store();
 
@@ -147,7 +147,7 @@ class TlsStream {
   void reset() noexcept;
 
   // Negotiated protocol version and cipher, for the startup log. Worth
-  // recording: a venue silently downgrading is something you want to see.
+  // recording: an exchange silently downgrading is something you want to see.
   std::string description() const;
 
   // Human-readable reason the stream failed, or empty.
@@ -168,7 +168,7 @@ class TlsStream {
 // Test scaffolding, deliberately kept in the shipping library rather than in
 // the test tree: standing up a real TLS server is the only way to prove the
 // pump above actually interoperates, and a diagnostic build wants the same
-// ability. Never use this for anything a venue will see.
+// ability. Never use this for anything an exchange will see.
 struct SelfSignedCertificate {
   std::string certificate_pem;
   std::string private_key_pem;

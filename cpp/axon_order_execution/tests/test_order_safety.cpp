@@ -1,20 +1,20 @@
 // The two ways order state used to go silently wrong, pinned down.
 //
 // 1. A TIMEOUT WAS REPORTED AS A FAILURE. An order whose reply never came may
-//    be live at the venue; reporting "failed" invites the strategy to retry,
+//    be live at the exchange; reporting "failed" invites the strategy to retry,
 //    and the retry doubles the position. Now: the timeout is reported as
 //    OUTCOME UNKNOWN, a resubmission of the same internal_order_id is refused,
 //    and the order's updates are tied back to the request by the client id
 //    every order now carries.
 //
-// 2. RECONCILIATION ONLY SAW ONE DIRECTION. Applying the venue's open-orders
-//    snapshot corrected the orders it listed, but an order the venue filled or
+// 2. RECONCILIATION ONLY SAW ONE DIRECTION. Applying the exchange's open-orders
+//    snapshot corrected the orders it listed, but an order the exchange filled or
 //    cancelled while the feed was down is simply absent from that list -- so it
 //    stayed "open" locally forever. Now each such order is looked up by id for
 //    its final state, as the Python OrderReconciler does.
 //
 // No network: the EMS sends through a fake live session, the reconciler reads
-// a scripted VenueRest.
+// a scripted ExchangeRest.
 
 #include <gtest/gtest.h>
 
@@ -28,12 +28,12 @@
 
 #include "axon/config.h"
 #include "axon/ems/ems_service.h"
-#include "axon/ems/venue_ops.h"
+#include "axon/ems/exchange_ops.h"
 #include "axon/models/order.h"
 #include "axon/oms/order_store.h"
 #include "axon/oms/reconciler.h"
-#include "axon/oms/venue_rest.h"
-#include "axon/oms/venue_session.h"
+#include "axon/oms/exchange_rest.h"
+#include "axon/oms/exchange_session.h"
 
 namespace {
 
@@ -53,10 +53,10 @@ using axon::models::OrderType;
 // ---------------------------------------------------------------------------
 // A session that is always live and records what it is asked to send.
 // ---------------------------------------------------------------------------
-class FakeLiveSession : public axon::oms::VenueSession {
+class FakeLiveSession : public axon::oms::ExchangeSession {
  public:
   explicit FakeLiveSession(std::string name)
-      : VenueSession(make_config(std::move(name)), {}, {}, nullptr, {}) {}
+      : ExchangeSession(make_config(std::move(name)), {}, {}, nullptr, {}) {}
 
   bool live() const noexcept override { return true; }
   bool send_raw(std::string_view payload) override {
@@ -159,13 +159,13 @@ TEST_F(EmsSafetyTest, ResubmittingAnUnresolvedOrderIsRefused) {
   ASSERT_TRUE(first.has_value());
   ASSERT_TRUE(first->outcome_unknown);
 
-  // The strategy's natural reaction -- try again -- must not reach the venue.
+  // The strategy's natural reaction -- try again -- must not reach the exchange.
   const auto retry = place(req);
   ASSERT_TRUE(retry.has_value());
   EXPECT_FALSE(retry->success);
   EXPECT_FALSE(retry->outcome_unknown);
   EXPECT_NE(retry->error.find("duplicate internal_order_id"), std::string::npos) << retry->error;
-  EXPECT_EQ(session->sent.size(), 1u) << "the duplicate was sent to the venue";
+  EXPECT_EQ(session->sent.size(), 1u) << "the duplicate was sent to the exchange";
 }
 
 TEST_F(EmsSafetyTest, ResubmittingWhileTheFirstIsInFlightIsRefused) {
@@ -178,8 +178,8 @@ TEST_F(EmsSafetyTest, ResubmittingWhileTheFirstIsInFlightIsRefused) {
   EXPECT_EQ(session->sent.size(), 1u);
 }
 
-// A definite no from the venue means nothing is live: the same id may retry.
-TEST_F(EmsSafetyTest, AVenueRejectionAllowsARetry) {
+// A definite no from the exchange means nothing is live: the same id may retry.
+TEST_F(EmsSafetyTest, AExchangeRejectionAllowsARetry) {
   make();
   const auto req = limit_buy();
   std::optional<OrderResult> first;
@@ -200,9 +200,9 @@ TEST_F(EmsSafetyTest, DistinctOrdersAreNotMistakenForDuplicates) {
   EXPECT_EQ(session->sent.size(), 2u);
 }
 
-// The venue order id comes back with the acceptance, so a strategy can tie
+// The exchange order id comes back with the acceptance, so a strategy can tie
 // what it placed to what it later sees.
-TEST_F(EmsSafetyTest, BinanceAcceptanceCarriesTheVenueOrder) {
+TEST_F(EmsSafetyTest, BinanceAcceptanceCarriesTheExchangeOrder) {
   make();
   const auto req = limit_buy();
   std::optional<OrderResult> out;
@@ -225,7 +225,7 @@ TEST_F(EmsSafetyTest, BinanceAcceptanceCarriesTheVenueOrder) {
 }
 
 // The request-id counter belongs to the EMS that uses it, not to the process:
-// two engines (or two tests) never share one, and every venue starts high
+// two engines (or two tests) never share one, and every exchange starts high
 // enough that no session handshake id can be mistaken for an order reply.
 TEST(EmsRequestIds, EachEmsCountsFromTheFirstRequestIdOnItsOwn) {
   auto first_id = [] {
@@ -247,7 +247,7 @@ TEST(EmsRequestIds, EachEmsCountsFromTheFirstRequestIdOnItsOwn) {
 // OrderStore: an update finds its way back to the request
 // ===========================================================================
 
-Order venue_update(const std::string& client_id, OrderStatus status) {
+Order exchange_update(const std::string& client_id, OrderStatus status) {
   Order o;
   o.order_id = "V-1";
   o.exchange = "binance";
@@ -267,20 +267,20 @@ TEST(OrderStoreSubmissions, UpdateForAnUnknownOutcomeOrderReachesItsStrategy) {
   auto req = limit_buy();
   store.register_submission("binance", req);
   // The placement reply was lost; the feed reports the order anyway.
-  store.update_from_ws(venue_update(req.internal_order_id, OrderStatus::kOpen));
+  store.update_from_ws(exchange_update(req.internal_order_id, OrderStatus::kOpen));
 
   ASSERT_EQ(seen.size(), 1u);
   EXPECT_EQ(seen[0].internal_order_id.value_or(""), req.internal_order_id);
   EXPECT_EQ(seen[0].strategy_id.value_or(""), "alpha");
 }
 
-// With a label the venue echoes the LABEL; it is mapped back to the real id.
+// With a label the exchange echoes the LABEL; it is mapped back to the real id.
 TEST(OrderStoreSubmissions, ALabelIsMappedBackToTheInternalOrderId) {
   axon::oms::OrderStore store;
   auto req = limit_buy();
   req.label = "chasemaker";
   store.register_submission("binance", req);
-  store.update_from_ws(venue_update("chasemaker", OrderStatus::kOpen));
+  store.update_from_ws(exchange_update("chasemaker", OrderStatus::kOpen));
 
   const auto o = store.get_order("V-1");
   ASSERT_TRUE(o.has_value());
@@ -300,9 +300,9 @@ TEST(OrderStoreSubmissions, ATerminalUpdateReleasesTheSubmission) {
   axon::oms::OrderStore store;
   auto req = limit_buy();
   store.register_submission("binance", req);
-  store.update_from_ws(venue_update(req.internal_order_id, OrderStatus::kOpen));
+  store.update_from_ws(exchange_update(req.internal_order_id, OrderStatus::kOpen));
   EXPECT_EQ(store.submission_count(), 1u);
-  auto done = venue_update(req.internal_order_id, OrderStatus::kFilled);
+  auto done = exchange_update(req.internal_order_id, OrderStatus::kFilled);
   done.updated_at = axon::core::Timestamp::from_ns(done.updated_at.ns() + 1'000'000);
   store.update_from_ws(done);
   EXPECT_EQ(store.submission_count(), 0u);
@@ -316,10 +316,10 @@ TEST(OrderStoreSubmissions, ForgetDropsARejectedSubmission) {
   EXPECT_EQ(store.submission_count(), 0u);
 }
 
-// An order placed outside this engine is left exactly as the venue sent it.
+// An order placed outside this engine is left exactly as the exchange sent it.
 TEST(OrderStoreSubmissions, AForeignClientIdIsLeftAlone) {
   axon::oms::OrderStore store;
-  store.update_from_ws(venue_update("webui123", OrderStatus::kOpen));
+  store.update_from_ws(exchange_update("webui123", OrderStatus::kOpen));
   const auto o = store.get_order("V-1");
   ASSERT_TRUE(o.has_value());
   EXPECT_EQ(o->internal_order_id.value_or(""), "webui123");
@@ -330,9 +330,9 @@ TEST(OrderStoreSubmissions, AForeignClientIdIsLeftAlone) {
 // Reconciler: orders that closed while the feed was not looking
 // ===========================================================================
 
-// A VenueRest whose answers the test scripts. Callbacks may be held and fired
+// A ExchangeRest whose answers the test scripts. Callbacks may be held and fired
 // later to exercise passes that span several replies.
-class ScriptedRest : public axon::oms::VenueRest {
+class ScriptedRest : public axon::oms::ExchangeRest {
  public:
   std::map<std::string, std::vector<Order>> open_by_currency;
   std::map<std::string, std::string> open_errors;  // currency -> error
@@ -387,7 +387,7 @@ Order open_order(const std::string& id, const std::string& exchange = "binance")
 Order closed(Order o, OrderStatus status, const char* filled) {
   o.status = status;
   o.filled_amount = *Qty::from_string(filled);
-  o.strategy_id.reset();  // the venue does not know it; the store carries it
+  o.strategy_id.reset();  // the exchange does not know it; the store carries it
   o.updated_at = axon::core::Timestamp::from_millis(2'000);
   return o;
 }
@@ -419,7 +419,7 @@ class ReconcilerTest : public ::testing::Test {
 
 TEST_F(ReconcilerTest, AnOrderThatFilledUnseenIsResolvedToFilled) {
   store.update_order(open_order("A"));
-  rest.open_by_currency["USDT"] = {};  // the venue no longer lists it
+  rest.open_by_currency["USDT"] = {};  // the exchange no longer lists it
   rest.final_state["A"] = closed(open_order("A"), OrderStatus::kFilled, "1");
 
   std::vector<Order> notified;
@@ -444,7 +444,7 @@ TEST_F(ReconcilerTest, AnOrderCancelledUnseenIsResolvedToCancelled) {
   EXPECT_EQ(reconciler->stats().closed_orders_recovered, 1u);
 }
 
-TEST_F(ReconcilerTest, OrdersTheVenueListsAreNotLookedUp) {
+TEST_F(ReconcilerTest, OrdersTheExchangeListsAreNotLookedUp) {
   store.update_order(open_order("A"));
   rest.open_by_currency["USDT"] = {open_order("A")};
   run_pass();

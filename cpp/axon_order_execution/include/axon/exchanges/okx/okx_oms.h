@@ -1,12 +1,12 @@
-// OKX order management: the venue's private feed session, its REST
+// OKX order management: the exchange's private feed session, its REST
 // snapshots. Counterpart of
 // exchanges/okx/okx_ems.h on the OMS side.
 #pragma once
 
-#include "axon/oms/oms_venue.h"
+#include "axon/oms/oms_exchange.h"
 
-namespace axon::oms::okx {
+namespace axon::exchanges::okx {
 
-const OmsVenue& venue();
+const oms::OmsExchange& oms_exchange();
 
-}  // namespace axon::oms::okx
+}  // namespace axon::exchanges::okx

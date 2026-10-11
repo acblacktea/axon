@@ -1,11 +1,11 @@
-// Binance: everything the OMS needs from this venue.
+// Binance: everything the OMS needs from this exchange.
 //
 // Binance USDT-M perpetuals: a user data stream keyed by a REST listenKey for
 // the feed, and a second connection to ws-fapi for order entry, where every
 // request carries its own signature.
 //
-// Moved out of venue_session.cpp and venue_rest.cpp so each venue's
-// protocol lives in one place, as it does on the EMS side. Only venue() is
+// Moved out of exchange_session.cpp and exchange_rest.cpp so each exchange's
+// protocol lives in one place, as it does on the EMS side. Only oms_exchange() is
 // visible outside this file.
 
 #include "axon/exchanges/binance/binance_oms.h"
@@ -23,9 +23,11 @@
 #include "axon/util/metrics.h"
 #include "axon/exchanges/binance/binance_builder.h"
 #include "axon/exchanges/binance/binance_parser.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
-namespace axon::oms::binance {
+namespace axon::exchanges::binance {
+
+using namespace axon::oms;
 namespace {
 
 auto& log() {
@@ -33,15 +35,15 @@ auto& log() {
   return logger;
 }
 
-using detail::doc;
-using detail::first_of_array_at;
-using detail::http_error;
-using detail::monotonic_seconds;
-using detail::now_ms;
-using detail::parse_array_at;
-using detail::parse_object_at;
-using detail::parse_string_id;
-using detail::url_encode;
+using oms::detail::doc;
+using oms::detail::first_of_array_at;
+using oms::detail::http_error;
+using oms::detail::monotonic_seconds;
+using oms::detail::now_ms;
+using oms::detail::parse_array_at;
+using oms::detail::parse_object_at;
+using oms::detail::parse_string_id;
+using oms::detail::url_encode;
 
 // ===========================================================================
 // The private feed session
@@ -52,19 +54,19 @@ using detail::url_encode;
 // The odd one: no WebSocket authentication at all. The stream is identified by
 // a listenKey fetched over REST and appended to the URL, and that key EXPIRES
 // after 60 minutes unless renewed. Renewal is a REST PUT every 30 minutes; if
-// it lapses the venue sends listenKeyExpired and stops delivering, which the
+// it lapses the exchange sends listenKeyExpired and stops delivering, which the
 // parser reports as kSessionExpired.
 // ===========================================================================
-class BinanceSession final : public VenueSession {
+class BinanceSession final : public ExchangeSession {
  public:
-  using VenueSession::VenueSession;
+  using ExchangeSession::ExchangeSession;
 
-  void set_rest(VenueRest* rest) { rest_ = rest; }
+  void set_rest(ExchangeRest* rest) { rest_ = rest; }
 
  protected:
   std::string host() const override {
-    return std::string(exchange_.is_testnet() ? venue::binance::kTestnetWsHost
-                                              : venue::binance::kProductionWsHost);
+    return std::string(exchange_.is_testnet() ? exchanges::binance::kTestnetWsHost
+                                              : exchanges::binance::kProductionWsHost);
   }
   // The key is part of the path, so this is only valid once we have one.
   std::string path() const override { return "/ws/" + listen_key_; }
@@ -134,7 +136,7 @@ class BinanceSession final : public VenueSession {
     Sink sink{this};
     const auto result = parser_.parse(reinterpret_cast<const char*>(data), len,
                                       capacity, sink);
-    if (result.kind == venue::VenueMessageKind::kSessionExpired) {
+    if (result.kind == exchanges::ExchangeMessageKind::kSessionExpired) {
       AXON_LOG_WARN(log(), "[binance] listenKey expired; re-establishing");
       listen_key_.clear();  // force a fresh key on the next connect
       fail_session("listenKey expired");
@@ -157,8 +159,8 @@ class BinanceSession final : public VenueSession {
     }
   };
 
-  venue::binance::BinanceParser parser_;
-  VenueRest* rest_ = nullptr;
+  exchanges::binance::BinanceParser parser_;
+  ExchangeRest* rest_ = nullptr;
   std::string listen_key_;
   bool listen_key_pending_ = false;
   double last_keepalive_ = 0.0;
@@ -176,7 +178,7 @@ class BinanceSession final : public VenueSession {
 //
 // Everything inbound is a reply to something we sent, so handle_frame extracts
 // the correlation id and hands the raw bytes to on_rpc_reply. The EMS knows
-// each venue's result shape; the session does not and should not.
+// each exchange's result shape; the session does not and should not.
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -185,18 +187,18 @@ class BinanceSession final : public VenueSession {
 // The odd one again: NO session login. Every request carries its own apiKey
 // and signature, so the connection is usable the moment it opens.
 // ---------------------------------------------------------------------------
-class BinanceTradeSession final : public VenueSession {
+class BinanceTradeSession final : public ExchangeSession {
  public:
-  using VenueSession::VenueSession;
+  using ExchangeSession::ExchangeSession;
 
  protected:
   std::string host() const override {
     return std::string(exchange_.is_testnet()
-                           ? venue::binance::kWsApiTestnetHost
-                           : venue::binance::kWsApiProductionHost);
+                           ? exchanges::binance::kWsApiTestnetHost
+                           : exchanges::binance::kWsApiProductionHost);
   }
   std::string path() const override {
-    return std::string(venue::binance::kWsApiPath);
+    return std::string(exchanges::binance::kWsApiPath);
   }
 
   // Nothing to authenticate. Each request signs itself, so the session is
@@ -258,7 +260,7 @@ class BinanceTradeSession final : public VenueSession {
   }
 
  private:
-  venue::Document doc_{64 * 1024};
+  exchanges::Document doc_{64 * 1024};
   double last_ping_ = 0.0;
 };
 
@@ -268,10 +270,10 @@ class BinanceTradeSession final : public VenueSession {
 // ===========================================================================
 // Binance USDT-M
 // ===========================================================================
-class BinanceRestImpl final : public VenueRest {
+class BinanceRestImpl final : public ExchangeRest {
  public:
-  BinanceRestImpl(ExchangeConfig exchange, net::HttpClient* http)
-      : exchange_(std::move(exchange)), http_(http) {}
+  BinanceRestImpl(ExchangeConfig exchange_config, net::HttpClient* http)
+      : exchange_(std::move(exchange_config)), http_(http) {}
 
   const std::string& exchange_name() const override { return exchange_.name; }
 
@@ -362,9 +364,9 @@ class BinanceRestImpl final : public VenueRest {
   }
 
  private:
-  static std::optional<models::Order> parse_order(venue::Object& d);
-  static std::optional<models::Fill> parse_fill(venue::Object& d);
-  static std::optional<models::Position> parse_position(venue::Object& d);
+  static std::optional<models::Order> parse_order(exchanges::Object& d);
+  static std::optional<models::Fill> parse_fill(exchanges::Object& d);
+  static std::optional<models::Position> parse_position(exchanges::Object& d);
 
   // Appends timestamp+recvWindow, signs the whole query, returns path?query.
   std::string signed_path(const std::string& path, const std::string& query) const {
@@ -384,8 +386,8 @@ class BinanceRestImpl final : public VenueRest {
     net::HttpRequest req;
     req.method = method;
     req.host = std::string(exchange_.is_testnet()
-                               ? venue::binance::kTestnetRestHost
-                               : venue::binance::kProductionRestHost);
+                               ? exchanges::binance::kTestnetRestHost
+                               : exchanges::binance::kProductionRestHost);
     req.path = path;
     req.body = body;
     if (authenticated) {
@@ -398,7 +400,7 @@ class BinanceRestImpl final : public VenueRest {
   net::HttpClient* http_;
 };
 
-std::optional<models::Order> BinanceRestImpl::parse_order(venue::Object& d) {
+std::optional<models::Order> BinanceRestImpl::parse_order(exchanges::Object& d) {
   models::Order o;
   o.exchange = "binance";
   // REST spells these out, unlike the single-letter stream payload.
@@ -421,7 +423,7 @@ std::optional<models::Order> BinanceRestImpl::parse_order(venue::Object& d) {
     o.price = price;
   }
   const auto mapping =
-      venue::binance::map_order_status(d["status"].as_string().value_or("NEW"));
+      exchanges::binance::map_order_status(d["status"].as_string().value_or("NEW"));
   o.status = mapping.status;
   const auto updated = d["updateTime"].as_int();
   const auto created = d["time"].as_int();
@@ -436,7 +438,7 @@ std::optional<models::Order> BinanceRestImpl::parse_order(venue::Object& d) {
   return o;
 }
 
-std::optional<models::Fill> BinanceRestImpl::parse_fill(venue::Object& d) {
+std::optional<models::Fill> BinanceRestImpl::parse_fill(exchanges::Object& d) {
   models::Fill f;
   f.exchange = "binance";
   const auto id = d["id"].as_int();
@@ -460,7 +462,7 @@ std::optional<models::Fill> BinanceRestImpl::parse_fill(venue::Object& d) {
   return f;
 }
 
-std::optional<models::Position> BinanceRestImpl::parse_position(venue::Object& d) {
+std::optional<models::Position> BinanceRestImpl::parse_position(exchanges::Object& d) {
   models::Position p;
   p.exchange = "binance";
   const auto symbol = d["symbol"].as_string();
@@ -480,41 +482,42 @@ std::optional<models::Position> BinanceRestImpl::parse_position(venue::Object& d
   return p;
 }
 
-std::unique_ptr<VenueSession> make_session(const ExchangeConfig& exchange,
+std::unique_ptr<ExchangeSession> make_session(const ExchangeConfig& exchange_config,
                                            const WebSocketConfig& ws_config,
                                            const RuntimeConfig& runtime,
-                                           const net::TlsContext* tls, VenueRest* rest,
-                                           VenueSessionHandlers handlers) {
+                                           const net::TlsContext* tls, ExchangeRest* rest,
+                                           ExchangeSessionHandlers handlers) {
   // The user data stream is keyed by a listenKey obtained over REST.
-  auto session = std::make_unique<BinanceSession>(exchange, ws_config, runtime, tls,
+  auto session = std::make_unique<BinanceSession>(exchange_config, ws_config, runtime, tls,
                                                   std::move(handlers));
   session->set_rest(rest);
   return session;
 }
 
-std::unique_ptr<VenueSession> make_trade_session(const ExchangeConfig& exchange,
+std::unique_ptr<ExchangeSession> make_trade_session(const ExchangeConfig& exchange_config,
                                                  const WebSocketConfig& ws_config,
                                                  const RuntimeConfig& runtime,
                                                  const net::TlsContext* tls,
-                                                 VenueSessionHandlers handlers) {
-  return std::make_unique<BinanceTradeSession>(exchange, ws_config, runtime, tls,
+                                                 ExchangeSessionHandlers handlers) {
+  return std::make_unique<BinanceTradeSession>(exchange_config, ws_config, runtime, tls,
                                                   std::move(handlers));
 }
 
-std::unique_ptr<VenueRest> make_rest(const ExchangeConfig& exchange, net::HttpClient* http) {
-  return std::make_unique<BinanceRestImpl>(exchange, http);
+std::unique_ptr<ExchangeRest> make_rest(const ExchangeConfig& exchange_config,
+                                        net::HttpClient* http) {
+  return std::make_unique<BinanceRestImpl>(exchange_config, http);
 }
 
 }  // namespace
 
-const OmsVenue& venue() {
-  static const OmsVenue kVenue{
+const OmsExchange& oms_exchange() {
+  static const OmsExchange kExchange{
       "binance",
       make_session,
       make_trade_session,
       make_rest,
   };
-  return kVenue;
+  return kExchange;
 }
 
-}  // namespace axon::oms::binance
+}  // namespace axon::exchanges::binance

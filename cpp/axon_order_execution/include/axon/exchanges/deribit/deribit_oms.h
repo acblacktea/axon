@@ -1,12 +1,12 @@
-// Deribit order management: the venue's private feed session, its REST
+// Deribit order management: the exchange's private feed session, its REST
 // snapshots. Counterpart of
 // exchanges/deribit/deribit_ems.h on the OMS side.
 #pragma once
 
-#include "axon/oms/oms_venue.h"
+#include "axon/oms/oms_exchange.h"
 
-namespace axon::oms::deribit {
+namespace axon::exchanges::deribit {
 
-const OmsVenue& venue();
+const oms::OmsExchange& oms_exchange();
 
-}  // namespace axon::oms::deribit
+}  // namespace axon::exchanges::deribit

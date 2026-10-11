@@ -18,7 +18,7 @@ add_executable(axon_tests
   test_ws_handshake.cpp
   test_deribit_parser.cpp
   test_deribit_builder.cpp
-  test_perp_venues.cpp
+  test_perp_exchanges.cpp
   test_ws_order_entry.cpp
   test_ws_connection.cpp
   test_client_order_id.cpp
@@ -28,7 +28,7 @@ target_include_directories(axon_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(axon_tests PRIVATE
   axon::transport
   axon::net
-  axon::venue
+  axon::exchanges
   GTest::gtest
   GTest::gtest_main
 )
@@ -126,7 +126,7 @@ endif()
 # ---------------------------------------------------------------------------
 # Live testnet suite.
 #
-# Talks to the venues' TESTNETS with real credentials, so it is a separate
+# Talks to the exchanges' TESTNETS with real credentials, so it is a separate
 # binary and deliberately NOT registered with ctest: a plain `ctest` must
 # never reach the network. Run it explicitly:
 #

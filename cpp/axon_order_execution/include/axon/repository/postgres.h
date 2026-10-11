@@ -11,7 +11,7 @@
 // counter increments -- because the alternative, blocking the loop that feeds
 // the order book, would turn a database problem into a trading outage.
 //
-// That trade means persistence is best-effort under load. The venue is the
+// That trade means persistence is best-effort under load. The exchange is the
 // record of truth and reconciliation is what recovers state; this table is for
 // analysis and post-trade, not for deciding whether an order is live.
 //
@@ -92,7 +92,7 @@ class PostgresOrderRepository final : public oms::OrderRepository {
   void update(const models::Order& order) override { writer_->write_order(order); }
 
   // Deliberately always empty. A blocking SELECT on the engine thread would
-  // stall every venue feed; the in-memory cache answers reads, and anything
+  // stall every exchange feed; the in-memory cache answers reads, and anything
   // not in it is recovered by reconciliation rather than by the database.
   std::optional<models::Order> get(const std::string&) override {
     return std::nullopt;

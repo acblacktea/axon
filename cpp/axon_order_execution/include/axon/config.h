@@ -49,7 +49,7 @@ struct WebSocketConfig {
   int request_timeout_seconds = 30;
   // Read for config-file compatibility with the Python, which retries an
   // individual auth/subscribe RPC this many times. This implementation
-  // reconnects the session instead -- see venue_session.cpp -- so the value is
+  // reconnects the session instead -- see exchange_session.cpp -- so the value is
   // accepted but not used.
   int max_request_retries = 3;
   double retry_delay_seconds = 1.0;
@@ -114,7 +114,7 @@ struct RuntimeConfig {
 };
 
 // Pre-trade limits for one instrument. Every limit is optional; an absent one
-// is not checked. Quantities are in the VENUE'S units for that instrument --
+// is not checked. Quantities are in the EXCHANGE'S units for that instrument --
 // BTC on Binance's BTCUSDT, USD contracts on Deribit's BTC-PERPETUAL -- and
 // notionals in its quote currency.
 struct RiskLimits {
@@ -122,7 +122,7 @@ struct RiskLimits {
   // |price x quantity| of one order. A market order is valued at the
   // reference price, and refused when there is no fresh one.
   std::optional<core::Price> max_order_notional;
-  // Worst-case |net position| if every working order filled: the venue's
+  // Worst-case |net position| if every working order filled: the exchange's
   // position plus every open order on the side that grows it.
   std::optional<core::Qty> max_position;
   // How far a limit price may sit from the reference price, as a fraction

@@ -22,7 +22,7 @@
 //
 // BACKPRESSURE IS A DROP, NOT A BLOCK. If a strategy stops reading, its event
 // ring fills and further events are dropped with a counter. Blocking the
-// engine loop on a wedged strategy would take down every venue feed.
+// engine loop on a wedged strategy would take down every exchange feed.
 //
 // Put `dir` on /dev/shm on Linux (tmpfs). A path on a real filesystem lets the
 // kernel try to write ring pages back to disk.

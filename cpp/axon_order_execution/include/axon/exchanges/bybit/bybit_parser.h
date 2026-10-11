@@ -27,10 +27,10 @@
 #include "axon/core/timestamp.h"
 #include "axon/models/portfolio.h"
 #include "axon/transport/hot_messages.h"
-#include "axon/venue/json_view.h"
-#include "axon/venue/venue_events.h"
+#include "axon/exchanges/common/json_view.h"
+#include "axon/exchanges/common/exchange_events.h"
 
-namespace axon::venue::bybit {
+namespace axon::exchanges::bybit {
 
 inline constexpr std::string_view kExchangeName = "bybit";
 
@@ -44,8 +44,8 @@ inline constexpr std::string_view kPath = "/v5/private";
 // The only product category this engine trades. See the note above.
 inline constexpr std::string_view kCategory = "linear";
 
-using MessageKind = VenueMessageKind;
-using ParseResult = VenueParseResult;
+using MessageKind = ExchangeMessageKind;
+using ParseResult = ExchangeParseResult;
 
 struct StatusMapping {
   models::OrderStatus status;
@@ -356,4 +356,4 @@ class BybitParser {
   std::uint64_t seq_ = 0;
 };
 
-}  // namespace axon::venue::bybit
+}  // namespace axon::exchanges::bybit

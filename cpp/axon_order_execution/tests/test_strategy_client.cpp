@@ -2,7 +2,7 @@
 // engine on a real ZMQ ROUTER socket.
 //
 // The case that matters: a request times out on the client, and the engine
-// answers it anyway, later -- its own wait on the venue is 30s against the
+// answers it anyway, later -- its own wait on the exchange is 30s against the
 // client's 5s. That late reply must not be taken as the answer to the NEXT
 // request. Before replies were matched by request_id, it was, and every
 // request after it got its predecessor's answer until the strategy restarted.
@@ -266,7 +266,7 @@ TEST_F(StrategyClientTest, RefusedPlacementIsRejected) {
   EXPECT_EQ(result.error, "Margin is insufficient.");
 }
 
-// The engine sent it and the venue never answered.
+// The engine sent it and the exchange never answered.
 TEST_F(StrategyClientTest, EngineReportedTimeoutIsUnknown) {
   const auto req = limit_buy();
   auto result = with_engine([&] { return client.submit_order("binance", req); }, [&] {
@@ -275,7 +275,7 @@ TEST_F(StrategyClientTest, EngineReportedTimeoutIsUnknown) {
     engine.reply_raw(*r, axon::transport::serialize_response(axon::transport::Response::fail(
                              r->command.request_id,
                              std::string(axon::transport::kOutcomeUnknownPrefix) +
-                                 "the venue did not reply in time")));
+                                 "the exchange did not reply in time")));
   });
   EXPECT_EQ(result.outcome, axon::client::PlaceOutcome::kUnknown);
   EXPECT_EQ(result.internal_order_id, req.internal_order_id);

@@ -1,5 +1,5 @@
 // Pre-trade risk. Each test is one way a strategy bug would otherwise reach
-// the venue: too large, too fast, mispriced, too much position, or a runaway
+// the exchange: too large, too fast, mispriced, too much position, or a runaway
 // that someone needs to stop right now.
 
 #include <gtest/gtest.h>
@@ -14,7 +14,7 @@
 #include "axon/ems/ems_service.h"
 #include "axon/models/order.h"
 #include "axon/risk/risk_manager.h"
-#include "axon/oms/venue_session.h"
+#include "axon/oms/exchange_session.h"
 
 namespace {
 
@@ -178,7 +178,7 @@ class RiskPosition : public ::testing::Test {
   RiskManager risk;
 };
 
-TEST_F(RiskPosition, VenuePositionCountsAgainstTheLimit) {
+TEST_F(RiskPosition, ExchangePositionCountsAgainstTheLimit) {
   risk.on_positions("binance", {held("0.8", "buy")});
   EXPECT_EQ(code(risk.check_new_order("binance", order(OrderSide::kBuy, "0.2"), kNow)), "allowed");
   EXPECT_EQ(code(risk.check_new_order("binance", order(OrderSide::kBuy, "0.3"), kNow)), "position");
@@ -217,7 +217,7 @@ TEST_F(RiskPosition, UnacknowledgedOrdersCountImmediately) {
   EXPECT_EQ(code(risk.check_new_order("binance", order(OrderSide::kBuy, "0.01"), kNow)), "position");
 }
 
-TEST_F(RiskPosition, AVenueRejectionReleasesTheExposure) {
+TEST_F(RiskPosition, AExchangeRejectionReleasesTheExposure) {
   const auto r = order(OrderSide::kBuy, "1");
   risk.on_order_sent("binance", r, kNow);
   EXPECT_EQ(code(risk.check_new_order("binance", order(OrderSide::kBuy, "0.1"), kNow)), "position");
@@ -263,7 +263,7 @@ TEST_F(RiskPosition, FillsMoveThePositionUntilTheNextSnapshot) {
   EXPECT_EQ(risk.position("binance", "BTCUSDT").raw(), Q("0.7").raw());
   EXPECT_EQ(code(risk.check_new_order("binance", order(OrderSide::kBuy, "0.4"), kNow)), "position");
 
-  risk.on_positions("binance", {});  // venue says flat
+  risk.on_positions("binance", {});  // exchange says flat
   EXPECT_EQ(risk.position("binance", "BTCUSDT").raw(), 0);
 }
 
@@ -414,7 +414,7 @@ TEST(RiskKillSource, TheEngagedCallbackRunsOncePerTransition) {
 TEST(RiskReference, OnlyExchangeQualifiedEntriesAreRefreshTargets) {
   RiskConfig c;
   c.instruments["binance:BTCUSDT"] = {};
-  c.instruments["ETHUSDT"] = {};   // no venue to ask
+  c.instruments["ETHUSDT"] = {};   // no exchange to ask
   c.instruments[":BAD"] = {};
   c.instruments["okx:"] = {};
   RiskManager risk(c);
@@ -519,12 +519,12 @@ TEST(RiskConfigTest, AbsentSectionMeansNoLimits) {
 }
 
 // ===========================================================================
-// In the EMS: a refused order never reaches the venue
+// In the EMS: a refused order never reaches the exchange
 // ===========================================================================
 
-class SendingSession : public axon::oms::VenueSession {
+class SendingSession : public axon::oms::ExchangeSession {
  public:
-  SendingSession() : VenueSession(cfg(), {}, {}, nullptr, {}) {}
+  SendingSession() : ExchangeSession(cfg(), {}, {}, nullptr, {}) {}
   bool live() const noexcept override { return true; }
   bool send_raw(std::string_view p) override {
     sent.emplace_back(p);

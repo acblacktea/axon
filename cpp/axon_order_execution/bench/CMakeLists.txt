@@ -11,7 +11,7 @@
 # absolute figure.
 
 add_executable(axon_bench bench_main.cpp)
-target_link_libraries(axon_bench PRIVATE axon::transport axon::net axon::venue)
+target_link_libraries(axon_bench PRIVATE axon::transport axon::net axon::exchanges)
 
 # ---------------------------------------------------------------------------
 # JSON parser comparison. Opt-in, because it pulls two libraries the shipping

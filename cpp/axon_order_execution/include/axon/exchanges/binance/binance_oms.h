@@ -1,12 +1,12 @@
-// Binance order management: the venue's private feed session, its REST
+// Binance order management: the exchange's private feed session, its REST
 // snapshots, its order-entry session. Counterpart of
 // exchanges/binance/binance_ems.h on the OMS side.
 #pragma once
 
-#include "axon/oms/oms_venue.h"
+#include "axon/oms/oms_exchange.h"
 
-namespace axon::oms::binance {
+namespace axon::exchanges::binance {
 
-const OmsVenue& venue();
+const oms::OmsExchange& oms_exchange();
 
-}  // namespace axon::oms::binance
+}  // namespace axon::exchanges::binance

@@ -1,10 +1,10 @@
 // deribit order entry. Counterpart of ems/deribit/deribit.py.
 #pragma once
 
-#include "axon/ems/venue_ops.h"
+#include "axon/ems/exchange_ops.h"
 
-namespace axon::ems::deribit {
+namespace axon::exchanges::deribit {
 
-const VenueOps& ops();
+const ems::ExchangeOps& ems_ops();
 
-}  // namespace axon::ems::deribit
+}  // namespace axon::exchanges::deribit

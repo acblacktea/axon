@@ -1,7 +1,7 @@
-// The client order id, end to end through the venue layer.
+// The client order id, end to end through the exchange layer.
 //
 // Every order now goes out with a client id -- the strategy's label, or our
-// internal_order_id -- and every venue echoes it on its updates. That echo is
+// internal_order_id -- and every exchange echoes it on its updates. That echo is
 // what ties an update to the request that produced it, which is the only way
 // to resolve a placement whose reply was lost: without it, a timeout leaves a
 // strategy unable to tell "not placed" from "placed and live", and the natural
@@ -37,7 +37,7 @@ template <typename Parser>
 std::vector<transport::OrderUpdateMsg> parse(Parser& p, std::string_view json) {
   std::string buf(json);
   const std::size_t len = buf.size();
-  buf.resize(len + venue::kJsonPadding, '\0');
+  buf.resize(len + exchanges::kJsonPadding, '\0');
   Collector c;
   p.parse(buf.data(), len, buf.size(), c);
   return c.orders;
@@ -90,16 +90,16 @@ std::string deribit_frame(const std::string& c) {
 
 TEST(OrderRequestClientId, DefaultsToTheInternalOrderId) {
   auto r = limit_buy("BTCUSDT");
-  EXPECT_EQ(r.venue_client_id(), r.internal_order_id);
+  EXPECT_EQ(r.exchange_client_id(), r.internal_order_id);
   EXPECT_EQ(r.internal_order_id.size(), 32u);
   r.label = "chase-maker";
-  EXPECT_EQ(r.venue_client_id(), "chase-maker");
+  EXPECT_EQ(r.exchange_client_id(), "chase-maker");
   r.label = "";
-  EXPECT_EQ(r.venue_client_id(), r.internal_order_id);
+  EXPECT_EQ(r.exchange_client_id(), r.internal_order_id);
 }
 
 // OKX's clOrdId -- 1 to 32 alphanumerics -- is the strictest of the four.
-TEST(OrderRequestClientId, InternalOrderIdMustSuitEveryVenue) {
+TEST(OrderRequestClientId, InternalOrderIdMustSuitEveryExchange) {
   auto r = limit_buy("BTCUSDT");
   EXPECT_FALSE(r.validate().has_value());
   r.internal_order_id = "";
@@ -113,8 +113,8 @@ TEST(OrderRequestClientId, InternalOrderIdMustSuitEveryVenue) {
 }
 
 TEST(BuilderClientId, BinanceSendsItAsNewClientOrderId) {
-  venue::binance::BinanceBuilder b;
-  char buf[venue::binance::kMaxRequestBytes];
+  exchanges::binance::BinanceBuilder b;
+  char buf[exchanges::binance::kMaxRequestBytes];
   std::int64_t id = 0;
   auto r = limit_buy("BTCUSDT");
   r.internal_order_id = kId;
@@ -127,8 +127,8 @@ TEST(BuilderClientId, BinanceSendsItAsNewClientOrderId) {
 }
 
 TEST(BuilderClientId, BybitSendsItAsOrderLinkId) {
-  venue::bybit::BybitBuilder b;
-  char buf[venue::bybit::kMaxRequestBytes];
+  exchanges::bybit::BybitBuilder b;
+  char buf[exchanges::bybit::kMaxRequestBytes];
   auto r = limit_buy("BTCUSDT");
   r.internal_order_id = kId;
   std::string out(buf, b.place_order_body(buf, sizeof buf, r));
@@ -136,8 +136,8 @@ TEST(BuilderClientId, BybitSendsItAsOrderLinkId) {
 }
 
 TEST(BuilderClientId, OkxSendsItAsClOrdId) {
-  venue::okx::OkxBuilder b;
-  char buf[venue::okx::kMaxRequestBytes];
+  exchanges::okx::OkxBuilder b;
+  char buf[exchanges::okx::kMaxRequestBytes];
   auto r = limit_buy("BTC-USDT-SWAP");
   r.internal_order_id = kId;
   std::string out(buf, b.place_order_body(buf, sizeof buf, r));
@@ -145,8 +145,8 @@ TEST(BuilderClientId, OkxSendsItAsClOrdId) {
 }
 
 TEST(BuilderClientId, DeribitSendsItAsLabel) {
-  venue::deribit::DeribitBuilder b;
-  char buf[venue::deribit::kMaxRequestBytes];
+  exchanges::deribit::DeribitBuilder b;
+  char buf[exchanges::deribit::kMaxRequestBytes];
   std::int64_t id = 0;
   auto r = limit_buy("BTC-PERPETUAL");
   r.internal_order_id = kId;
@@ -155,32 +155,32 @@ TEST(BuilderClientId, DeribitSendsItAsLabel) {
 }
 
 // ===========================================================================
-// The echo: each venue's order update carries it back
+// The echo: each exchange's order update carries it back
 // ===========================================================================
 
 TEST(ParserClientId, BinanceReadsC) {
-  venue::binance::BinanceParser p;
+  exchanges::binance::BinanceParser p;
   auto o = parse(p, binance_frame(kId));
   ASSERT_EQ(o.size(), 1u);
   EXPECT_EQ(o[0].internal_order_id.view(), kId);
 }
 
 TEST(ParserClientId, BybitReadsOrderLinkId) {
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   auto o = parse(p, bybit_frame(kId));
   ASSERT_EQ(o.size(), 1u);
   EXPECT_EQ(o[0].internal_order_id.view(), kId);
 }
 
 TEST(ParserClientId, OkxReadsClOrdId) {
-  venue::okx::OkxParser p;
+  exchanges::okx::OkxParser p;
   auto o = parse(p, okx_frame(kId));
   ASSERT_EQ(o.size(), 1u);
   EXPECT_EQ(o[0].internal_order_id.view(), kId);
 }
 
 TEST(ParserClientId, DeribitReadsLabel) {
-  venue::deribit::DeribitParser p;
+  exchanges::deribit::DeribitParser p;
   auto o = parse(p, deribit_frame(kId));
   ASSERT_EQ(o.size(), 1u);
   EXPECT_EQ(o[0].internal_order_id.view(), kId);
@@ -188,17 +188,17 @@ TEST(ParserClientId, DeribitReadsLabel) {
 
 // A label the OMS maps back to its request is carried through as-is.
 TEST(ParserClientId, ALabelIsCarriedForTheOmsToMap) {
-  venue::bybit::BybitParser p;
+  exchanges::bybit::BybitParser p;
   auto o = parse(p, bybit_frame("chase-maker"));
   ASSERT_EQ(o.size(), 1u);
   EXPECT_EQ(o[0].internal_order_id.view(), "chase-maker");
 }
 
-// An order placed elsewhere (the venue's web UI, another system) can carry an
+// An order placed elsewhere (the exchange's web UI, another system) can carry an
 // id longer than the field. It is left empty rather than truncated -- a
 // truncated id could collide with one of ours.
 TEST(ParserClientId, AnIdTooLongForTheFieldIsLeftEmpty) {
-  venue::binance::BinanceParser p;
+  exchanges::binance::BinanceParser p;
   auto o = parse(p, binance_frame("web_usdt_rvrfakrvetf7acfj4bt7hm4xxxxxxxx"));
   ASSERT_EQ(o.size(), 1u);
   EXPECT_TRUE(o[0].internal_order_id.empty());
@@ -206,7 +206,7 @@ TEST(ParserClientId, AnIdTooLongForTheFieldIsLeftEmpty) {
 }
 
 TEST(ParserClientId, MissingClientIdLeavesItEmpty) {
-  venue::okx::OkxParser p;
+  exchanges::okx::OkxParser p;
   auto o = parse(p, R"({"arg":{"channel":"orders","instType":"SWAP"},"data":[{
 "instId":"BTC-USDT-SWAP","ordId":"OKX-1","side":"buy","ordType":"limit","sz":"1",
 "px":"1","accFillSz":"0","avgPx":"","state":"live","cTime":"1","uTime":"2"}]})");

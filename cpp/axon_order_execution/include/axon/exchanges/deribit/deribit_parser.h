@@ -17,7 +17,7 @@
 // FIELD ORDER MATTERS. simdjson On-Demand searches forward and only rewinds
 // when it must, so reading fields out of document order silently turns one
 // pass into one pass per field. The reads below follow Deribit's actual field
-// order; if the venue reorders them the parser still works, just slower.
+// order; if the exchange reorders them the parser still works, just slower.
 
 #pragma once
 
@@ -29,16 +29,16 @@
 #include "axon/models/portfolio.h"
 #include "axon/transport/hot_messages.h"
 #include "axon/exchanges/deribit/deribit_protocol.h"
-#include "axon/venue/json_view.h"
-#include "axon/venue/venue_events.h"
+#include "axon/exchanges/common/json_view.h"
+#include "axon/exchanges/common/exchange_events.h"
 
-namespace axon::venue::deribit {
+namespace axon::exchanges::deribit {
 
-// Deribit's own names for the shared result types. The four venues report
-// through one shape (see venue/venue_events.h) so the OMS above them does not
+// Deribit's own names for the shared result types. The four exchanges report
+// through one shape (see exchange/exchange_events.h) so the OMS above them does not
 // need to know which protocol produced a message.
-using MessageKind = VenueMessageKind;
-using ParseResult = VenueParseResult;
+using MessageKind = ExchangeMessageKind;
+using ParseResult = ExchangeParseResult;
 
 class DeribitParser {
  public:
@@ -366,9 +366,9 @@ class DeribitParser {
 
     // DIVERGENCE from the Python, deliberately: it stamps this with
     // datetime.utcnow(), i.e. local receive time rather than anything the
-    // venue said. Deribit's portfolio payload carries no timestamp, so
+    // exchange said. Deribit's portfolio payload carries no timestamp, so
     // receive time is the only option -- but it is recorded as such by the
-    // caller, not baked in here where it would look like venue data.
+    // caller, not baked in here where it would look like exchange data.
     out.timestamp = core::Timestamp{};
   }
 
@@ -376,4 +376,4 @@ class DeribitParser {
   std::uint64_t seq_ = 0;
 };
 
-}  // namespace axon::venue::deribit
+}  // namespace axon::exchanges::deribit

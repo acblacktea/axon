@@ -1,10 +1,10 @@
 // binance order entry. Counterpart of ems/binance/binance.py.
 #pragma once
 
-#include "axon/ems/venue_ops.h"
+#include "axon/ems/exchange_ops.h"
 
-namespace axon::ems::binance {
+namespace axon::exchanges::binance {
 
-const VenueOps& ops();
+const ems::ExchangeOps& ems_ops();
 
-}  // namespace axon::ems::binance
+}  // namespace axon::exchanges::binance

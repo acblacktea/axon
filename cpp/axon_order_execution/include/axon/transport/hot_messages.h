@@ -15,7 +15,7 @@
 //   * Strings are fixed-width arrays. A value that does not fit is REJECTED,
 //     not truncated -- a silently truncated instrument name would route an
 //     order to the wrong contract. The widths below have generous headroom;
-//     revisit them if a venue introduces longer symbols.
+//     revisit them if an exchange introduces longer symbols.
 //
 //   * Both sides must be compiled from the same headers. There is no version
 //     negotiation beyond the header's `version` field, which exists so a

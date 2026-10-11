@@ -1,10 +1,10 @@
-// What a venue does differently on the order path.
+// What an exchange does differently on the order path.
 //
-// The C++ counterpart of ems/base.py plus the four exchanges/<venue>/ modules: this
-// header is the interface, and each venue supplies one instance of it from its
-// own translation unit. ems_service.cpp holds no venue knowledge at all.
+// The C++ counterpart of ems/base.py plus the four exchanges/<exchange>/ modules: this
+// header is the interface, and each exchange supplies one instance of it from its
+// own translation unit. ems_service.cpp holds no exchange knowledge at all.
 //
-// The table is NOT here to make the venues look alike. Their differences are
+// The table is NOT here to make the exchanges look alike. Their differences are
 // load-bearing and documented throughout this codebase -- Deribit cancels by
 // id alone, OKX accepts a request and rejects the order separately, Binance
 // signs every message. The point is that each difference is stated ONCE, in a
@@ -26,18 +26,18 @@
 #include "axon/exchanges/binance/binance_builder.h"
 #include "axon/exchanges/bybit/bybit_builder.h"
 #include "axon/exchanges/deribit/deribit_builder.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 #include "axon/exchanges/okx/okx_builder.h"
 
 namespace axon::ems {
 
-// One stack buffer serves every venue, sized for the largest request any of
-// them can produce. Checked here so a venue whose limit grows past the others
+// One stack buffer serves every exchange, sized for the largest request any of
+// them can produce. Checked here so an exchange whose limit grows past the others
 // fails to compile rather than truncating an order.
-inline constexpr std::size_t kMaxRequestBytes = venue::bybit::kMaxRequestBytes;
-static_assert(kMaxRequestBytes >= venue::deribit::kMaxRequestBytes);
-static_assert(kMaxRequestBytes >= venue::okx::kMaxRequestBytes);
-static_assert(kMaxRequestBytes >= venue::binance::kMaxRequestBytes);
+inline constexpr std::size_t kMaxRequestBytes = exchanges::bybit::kMaxRequestBytes;
+static_assert(kMaxRequestBytes >= exchanges::deribit::kMaxRequestBytes);
+static_assert(kMaxRequestBytes >= exchanges::okx::kMaxRequestBytes);
+static_assert(kMaxRequestBytes >= exchanges::binance::kMaxRequestBytes);
 
 // Order-entry request ids start far above anything a session handshake
 // consumes.
@@ -49,7 +49,7 @@ static_assert(kMaxRequestBytes >= venue::binance::kMaxRequestBytes);
 // 1, so the FIRST order on a connection could do exactly that.
 inline constexpr std::int64_t kEmsFirstRequestId = 1'000'000;
 
-// The mutable state behind order entry, one per EmsService: each venue's
+// The mutable state behind order entry, one per EmsService: each exchange's
 // request builder -- whose id counter correlates replies with requests -- and
 // a scratch document for parsing replies.
 //
@@ -58,30 +58,30 @@ inline constexpr std::int64_t kEmsFirstRequestId = 1'000'000;
 // together, and two EMS instances never share a counter. Like the EMS itself
 // it is single-threaded: one EmsService is driven from one thread.
 //
-// Every venue starts its ids at kEmsFirstRequestId. Only Deribit and Bybit
+// Every exchange starts its ids at kEmsFirstRequestId. Only Deribit and Bybit
 // strictly need it -- their sessions claim auth/subscribe replies by id on
 // the same connection -- but one rule is easier to keep than four.
-struct VenueState {
-  venue::deribit::DeribitBuilder deribit{kEmsFirstRequestId};
-  venue::okx::OkxBuilder okx{kEmsFirstRequestId};
-  venue::bybit::BybitBuilder bybit{kEmsFirstRequestId};
-  venue::binance::BinanceBuilder binance{kEmsFirstRequestId};
+struct ExchangeState {
+  exchanges::deribit::DeribitBuilder deribit{kEmsFirstRequestId};
+  exchanges::okx::OkxBuilder okx{kEmsFirstRequestId};
+  exchanges::bybit::BybitBuilder bybit{kEmsFirstRequestId};
+  exchanges::binance::BinanceBuilder binance{kEmsFirstRequestId};
   // Reply parsing scratch: sized once, reused, never reallocated per reply.
-  venue::Document reply_doc{64 * 1024};
+  exchanges::Document reply_doc{64 * 1024};
 };
 
-// What a builder needs beyond the request itself. Passed to every venue so the
-// signatures are uniform; a venue ignores what it does not use.
+// What a builder needs beyond the request itself. Passed to every exchange so the
+// signatures are uniform; an exchange ignores what it does not use.
 struct BuildContext {
   // The builders. Never null when the EMS builds a request.
-  VenueState* state;
+  ExchangeState* state;
   // Credentials. Null unless configured -- only Binance needs them per
   // request, because it signs each one rather than logging the session in.
   const ExchangeConfig* config;
   std::int64_t now_ms;
 };
 
-struct VenueOps {
+struct ExchangeOps {
   const char* name;
 
   // Binance and Bybit each need a second, order-entry-only connection. Deribit
@@ -107,16 +107,16 @@ struct VenueOps {
                               std::optional<core::Price> price,
                               const BuildContext& ctx, std::int64_t& id);
 
-  // Interprets a reply the venue itself called successful. The venues disagree
-  // about what that means, which is the whole reason this is per-venue: see
+  // Interprets a reply the exchange itself called successful. The exchanges disagree
+  // about what that means, which is the whole reason this is per-exchange: see
   // okx_ems.cpp.
   OrderResult (*interpret_reply)(std::string_view payload,
                                  const models::OrderRequest& request,
-                                 VenueState& state);
+                                 ExchangeState& state);
 };
 
-// The venue this exchange name maps to, or nullptr if this build has no
-// order-entry implementation for it. The ONLY place a venue is chosen by name.
-const VenueOps* ops_for(std::string_view exchange);
+// The exchange this exchange name maps to, or nullptr if this build has no
+// order-entry implementation for it. The ONLY place an exchange is chosen by name.
+const ExchangeOps* ops_for(std::string_view exchange);
 
 }  // namespace axon::ems

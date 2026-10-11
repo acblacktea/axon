@@ -50,7 +50,7 @@ void ShmBridge::publish(const Msg& msg, std::string_view strategy,
     void* slot = pair.events->try_acquire_write();
     if (slot == nullptr) {
       // The strategy has stopped reading. Dropping is deliberate: blocking
-      // here would stall every venue feed on one wedged consumer.
+      // here would stall every exchange feed on one wedged consumer.
       ++stats_.events_dropped;
       return;
     }

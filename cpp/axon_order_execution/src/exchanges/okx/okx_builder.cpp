@@ -4,9 +4,9 @@
 
 #include "axon/net/crypto_lite.h"
 
-namespace axon::venue::okx {
+namespace axon::exchanges::okx {
 
-using axon::venue::detail::Writer;
+using axon::exchanges::detail::Writer;
 
 namespace {
 
@@ -142,9 +142,9 @@ std::size_t OkxBuilder::place_order_body(
   // Every order carries a client order id -- the label, or our
   // internal_order_id when there is none -- so its updates can be tied back
   // to the request even when the placement reply is lost. See
-  // OrderRequest::venue_client_id.
+  // OrderRequest::exchange_client_id.
   w.raw(R"(,"clOrdId":)");
-  w.json_string(req.venue_client_id());
+  w.json_string(req.exchange_client_id());
 
   w.raw("}");
   return w.written(out);
@@ -266,4 +266,4 @@ std::size_t OkxBuilder::ws_amend_order(char* out, std::size_t cap,
   });
 }
 
-}  // namespace axon::venue::okx
+}  // namespace axon::exchanges::okx

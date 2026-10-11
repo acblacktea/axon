@@ -106,7 +106,7 @@ void PortfolioStore::update_account(const models::AccountSummary& account) {
 void PortfolioStore::update_positions(const std::string& exchange,
                                       const std::vector<models::Position>& positions) {
   // REPLACE, do not merge. A position that has been closed simply vanishes
-  // from the venue's snapshot; merging would leave it in the cache forever and
+  // from the exchange's snapshot; merging would leave it in the cache forever and
   // a strategy would keep hedging a position it no longer has.
   position_cache_[exchange] = positions;
 

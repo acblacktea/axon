@@ -1,6 +1,6 @@
-// REST response parsing shared by the four VenueRest implementations.
+// REST response parsing shared by the four ExchangeRest implementations.
 //
-// Internal to the venue REST clients in exchanges/<venue>/; a header so the parsing
+// Internal to the exchange REST clients in exchanges/<exchange>/; a header so the parsing
 // can be tested without a network. Nothing outside oms/ should include it.
 
 #pragma once
@@ -13,7 +13,7 @@
 
 #include "axon/core/clock.h"
 #include "axon/net/http_client.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
 namespace axon::oms::detail {
 
@@ -37,8 +37,8 @@ inline std::string url_encode(std::string_view s) {
   return out;
 }
 
-inline venue::Document& doc() {
-  static thread_local venue::Document d(1u << 20);
+inline exchanges::Document& doc() {
+  static thread_local exchanges::Document d(1u << 20);
   return d;
 }
 
@@ -61,7 +61,7 @@ void parse_array_at(const net::HttpResponse& r,
     return;
   }
 
-  std::optional<venue::Array> array;
+  std::optional<exchanges::Array> array;
   if (path.empty()) {
     // The whole document is the array. It must be wrapped BEFORE anything
     // tries to read it as an object: Document::parse_copy yields an object,
@@ -79,7 +79,7 @@ void parse_array_at(const net::HttpResponse& r,
       callback(std::vector<Item>{}, "malformed response");
       return;
     }
-    venue::Object current = *root;
+    exchanges::Object current = *root;
     for (std::size_t i = 0; i + 1 < path.size(); ++i) {
       auto next = current[path[i]].as_object();
       if (!next.has_value()) {
@@ -98,7 +98,7 @@ void parse_array_at(const net::HttpResponse& r,
     return;
   }
   std::vector<Item> items;
-  array->for_each_object([&](venue::Object& obj) {
+  array->for_each_object([&](exchanges::Object& obj) {
     if (auto item = parse(obj); item.has_value()) {
       items.push_back(std::move(*item));
     }
@@ -107,7 +107,7 @@ void parse_array_at(const net::HttpResponse& r,
 }
 
 // One object at `path` (empty: the whole body), parsed into a single item.
-// For the single-order lookups. A venue error arrives as an HTTP error and is
+// For the single-order lookups. An exchange error arrives as an HTTP error and is
 // reported as one; a body that parses but is not an order is reported too,
 // rather than read as "no such order".
 template <typename Item, typename Parse, typename Callback>
@@ -123,7 +123,7 @@ void parse_object_at(const net::HttpResponse& r,
     callback(std::optional<Item>{}, "malformed response");
     return;
   }
-  venue::Object current = *root;
+  exchanges::Object current = *root;
   for (const auto& key : path) {
     auto next = current[key].as_object();
     if (!next.has_value()) {
@@ -140,9 +140,9 @@ void parse_object_at(const net::HttpResponse& r,
   callback(std::move(item), {});
 }
 
-// The first element of the array at `path`. The venues that answer a
+// The first element of the array at `path`. The exchanges that answer a
 // single-order lookup with a one-element list (Bybit, OKX) go through here;
-// an empty list means the venue does not know the order.
+// an empty list means the exchange does not know the order.
 template <typename Item, typename Parse, typename Callback>
 void first_of_array_at(const net::HttpResponse& r,
                        const std::vector<std::string>& path, Parse parse,

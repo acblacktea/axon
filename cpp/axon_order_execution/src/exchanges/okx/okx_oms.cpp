@@ -1,10 +1,10 @@
-// OKX: everything the OMS needs from this venue.
+// OKX: everything the OMS needs from this exchange.
 //
 // OKX v5 perpetual swaps: one private connection carries the feed AND order
 // entry (op:"order"), logged in once with a signed, passphrase-bearing login.
 //
-// Moved out of venue_session.cpp and venue_rest.cpp so each venue's
-// protocol lives in one place, as it does on the EMS side. Only venue() is
+// Moved out of exchange_session.cpp and exchange_rest.cpp so each exchange's
+// protocol lives in one place, as it does on the EMS side. Only oms_exchange() is
 // visible outside this file.
 
 #include "axon/exchanges/okx/okx_oms.h"
@@ -22,20 +22,22 @@
 #include "axon/util/metrics.h"
 #include "axon/exchanges/okx/okx_builder.h"
 #include "axon/exchanges/okx/okx_parser.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
-namespace axon::oms::okx {
+namespace axon::exchanges::okx {
+
+using namespace axon::oms;
 namespace {
 
-using detail::doc;
-using detail::first_of_array_at;
-using detail::http_error;
-using detail::monotonic_seconds;
-using detail::now_ms;
-using detail::parse_array_at;
-using detail::parse_object_at;
-using detail::parse_string_id;
-using detail::url_encode;
+using oms::detail::doc;
+using oms::detail::first_of_array_at;
+using oms::detail::http_error;
+using oms::detail::monotonic_seconds;
+using oms::detail::now_ms;
+using oms::detail::parse_array_at;
+using oms::detail::parse_object_at;
+using oms::detail::parse_string_id;
+using oms::detail::url_encode;
 
 // ===========================================================================
 // The private feed session
@@ -43,35 +45,35 @@ using detail::url_encode;
 // ===========================================================================
 // OKX
 // ===========================================================================
-class OkxSession final : public VenueSession {
+class OkxSession final : public ExchangeSession {
  public:
-  using VenueSession::VenueSession;
+  using ExchangeSession::ExchangeSession;
 
  protected:
   std::string host() const override {
-    return std::string(exchange_.is_testnet() ? venue::okx::kTestnetHost
-                                              : venue::okx::kProductionHost);
+    return std::string(exchange_.is_testnet() ? exchanges::okx::kTestnetHost
+                                              : exchanges::okx::kProductionHost);
   }
   std::string path() const override { return "/ws/v5/private"; }
 
   bool send_authentication() override {
-    char buf[venue::okx::kMaxRequestBytes];
+    char buf[exchanges::okx::kMaxRequestBytes];
     // SECONDS, not milliseconds. OKX rejects a millisecond timestamp here even
     // though its REST signing uses them, with an error that says nothing.
     const std::int64_t seconds = core::wall_clock_ns() / 1'000'000'000LL;
-    const std::size_t n = venue::okx::OkxBuilder::ws_login(
+    const std::size_t n = exchanges::okx::OkxBuilder::ws_login(
         buf, sizeof(buf), exchange_.api_key, exchange_.passphrase,
         exchange_.api_secret, seconds);
     return n > 0 && send_raw(std::string_view(buf, n));
   }
 
   bool send_subscriptions() override {
-    const std::string_view channels[] = {venue::okx::kOrdersChannel,
-                                         venue::okx::kFillsChannel,
-                                         venue::okx::kAccountChannel};
-    char buf[venue::okx::kMaxRequestBytes];
+    const std::string_view channels[] = {exchanges::okx::kOrdersChannel,
+                                         exchanges::okx::kFillsChannel,
+                                         exchanges::okx::kAccountChannel};
+    char buf[exchanges::okx::kMaxRequestBytes];
     const std::size_t n =
-        venue::okx::OkxBuilder::ws_subscribe(buf, sizeof(buf), channels, 3);
+        exchanges::okx::OkxBuilder::ws_subscribe(buf, sizeof(buf), channels, 3);
     return n > 0 && send_raw(std::string_view(buf, n));
   }
 
@@ -110,7 +112,7 @@ class OkxSession final : public VenueSession {
     Sink sink{this};
     const auto result = parser_.parse(reinterpret_cast<const char*>(data), len,
                                       capacity, sink);
-    if (result.kind == venue::VenueMessageKind::kSessionEvent) {
+    if (result.kind == exchanges::ExchangeMessageKind::kSessionEvent) {
       if (result.channel == "login") {
         on_auth_reply(true, {});
       } else if (result.channel == "subscribe") {
@@ -118,7 +120,7 @@ class OkxSession final : public VenueSession {
         // call the session live.
         on_subscribe_reply(true, {});
       }
-    } else if (result.kind == venue::VenueMessageKind::kRpcError) {
+    } else if (result.kind == exchanges::ExchangeMessageKind::kRpcError) {
       const std::string text(result.rpc_error_text);
       fail_session("okx error: " + text, /*fatal=*/text.find("Login") != std::string::npos);
     }
@@ -139,10 +141,10 @@ class OkxSession final : public VenueSession {
     }
   };
 
-  venue::okx::OkxParser parser_;
+  exchanges::okx::OkxParser parser_;
   // A second parser, because the feed parser's document is mid-walk when an
   // order reply arrives and On-Demand cannot revisit one.
-  venue::Document reply_doc_{64 * 1024};
+  exchanges::Document reply_doc_{64 * 1024};
 };
 
 // ===========================================================================
@@ -151,10 +153,10 @@ class OkxSession final : public VenueSession {
 // ===========================================================================
 // OKX v5
 // ===========================================================================
-class OkxRestImpl final : public VenueRest {
+class OkxRestImpl final : public ExchangeRest {
  public:
-  OkxRestImpl(ExchangeConfig exchange, net::HttpClient* http)
-      : exchange_(std::move(exchange)), http_(http) {}
+  OkxRestImpl(ExchangeConfig exchange_config, net::HttpClient* http)
+      : exchange_(std::move(exchange_config)), http_(http) {}
 
   const std::string& exchange_name() const override { return exchange_.name; }
 
@@ -172,7 +174,7 @@ class OkxRestImpl final : public VenueRest {
              return;
            }
            std::optional<models::Ticker> ticker;
-           data->for_each_object([&](venue::Object& d) {
+           data->for_each_object([&](exchanges::Object& d) {
              if (ticker.has_value()) {
                return;
              }
@@ -225,16 +227,16 @@ class OkxRestImpl final : public VenueRest {
   }
 
  private:
-  static std::optional<models::Order> parse_order(venue::Object& d);
-  static std::optional<models::Fill> parse_fill(venue::Object& d);
-  static std::optional<models::Position> parse_position(venue::Object& d);
+  static std::optional<models::Order> parse_order(exchanges::Object& d);
+  static std::optional<models::Fill> parse_fill(exchanges::Object& d);
+  static std::optional<models::Position> parse_position(exchanges::Object& d);
 
   void send(const std::string& path, const std::string& method,
             const std::string& body, bool authenticated,
             std::function<void(const net::HttpResponse&)> handler) {
     net::HttpRequest req;
     req.method = method;
-    req.host = std::string(venue::okx::kProductionRestHost);
+    req.host = std::string(exchanges::okx::kProductionRestHost);
     req.path = path;
     req.body = body;
     if (authenticated) {
@@ -265,7 +267,7 @@ class OkxRestImpl final : public VenueRest {
   net::HttpClient* http_;
 };
 
-std::optional<models::Order> OkxRestImpl::parse_order(venue::Object& d) {
+std::optional<models::Order> OkxRestImpl::parse_order(exchanges::Object& d) {
   models::Order o;
   o.exchange = "okx";
   const auto id = d["ordId"].as_string();
@@ -277,12 +279,12 @@ std::optional<models::Order> OkxRestImpl::parse_order(venue::Object& d) {
   o.instrument = std::string(*inst);
   o.side = d["side"].as_string().value_or("buy") == "buy" ? models::OrderSide::kBuy
                                                           : models::OrderSide::kSell;
-  o.order_type = venue::okx::map_order_type(d["ordType"].as_string().value_or("limit"));
+  o.order_type = exchanges::okx::map_order_type(d["ordType"].as_string().value_or("limit"));
   o.amount = d["sz"].as_decimal().value_or(core::Qty{});
   o.filled_amount = d["accFillSz"].as_decimal().value_or(core::Qty{});
   o.price = d["px"].as_decimal();
   o.average_price = d["avgPx"].as_decimal();
-  o.status = venue::okx::map_order_status(d["state"].as_string().value_or("live")).status;
+  o.status = exchanges::okx::map_order_status(d["state"].as_string().value_or("live")).status;
   const auto created = d["cTime"].as_int();
   const auto updated = d["uTime"].as_int();
   o.created_at = core::Timestamp::from_millis(created.value_or(0));
@@ -296,7 +298,7 @@ std::optional<models::Order> OkxRestImpl::parse_order(venue::Object& d) {
   return o;
 }
 
-std::optional<models::Fill> OkxRestImpl::parse_fill(venue::Object& d) {
+std::optional<models::Fill> OkxRestImpl::parse_fill(exchanges::Object& d) {
   models::Fill f;
   f.exchange = "okx";
   auto trade_id = d["tradeId"].as_string();
@@ -325,7 +327,7 @@ std::optional<models::Fill> OkxRestImpl::parse_fill(venue::Object& d) {
   return f;
 }
 
-std::optional<models::Position> OkxRestImpl::parse_position(venue::Object& d) {
+std::optional<models::Position> OkxRestImpl::parse_position(exchanges::Object& d) {
   models::Position p;
   p.exchange = "okx";
   const auto inst = d["instId"].as_string();
@@ -345,29 +347,30 @@ std::optional<models::Position> OkxRestImpl::parse_position(venue::Object& d) {
   return p;
 }
 
-std::unique_ptr<VenueSession> make_session(const ExchangeConfig& exchange,
+std::unique_ptr<ExchangeSession> make_session(const ExchangeConfig& exchange_config,
                                            const WebSocketConfig& ws_config,
                                            const RuntimeConfig& runtime,
-                                           const net::TlsContext* tls, VenueRest*,
-                                           VenueSessionHandlers handlers) {
-  return std::make_unique<OkxSession>(exchange, ws_config, runtime, tls,
+                                           const net::TlsContext* tls, ExchangeRest*,
+                                           ExchangeSessionHandlers handlers) {
+  return std::make_unique<OkxSession>(exchange_config, ws_config, runtime, tls,
                                                   std::move(handlers));
 }
 
-std::unique_ptr<VenueRest> make_rest(const ExchangeConfig& exchange, net::HttpClient* http) {
-  return std::make_unique<OkxRestImpl>(exchange, http);
+std::unique_ptr<ExchangeRest> make_rest(const ExchangeConfig& exchange_config,
+                                        net::HttpClient* http) {
+  return std::make_unique<OkxRestImpl>(exchange_config, http);
 }
 
 }  // namespace
 
-const OmsVenue& venue() {
-  static const OmsVenue kVenue{
+const OmsExchange& oms_exchange() {
+  static const OmsExchange kExchange{
       "okx",
       make_session,
       nullptr,  // no order-entry session: orders ride the feed session
       make_rest,
   };
-  return kVenue;
+  return kExchange;
 }
 
-}  // namespace axon::oms::okx
+}  // namespace axon::exchanges::okx

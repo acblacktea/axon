@@ -1,7 +1,7 @@
 #include "axon/ems/ems_service.h"
 
 #include "axon/core/clock.h"
-#include "axon/ems/venue_ops.h"
+#include "axon/ems/exchange_ops.h"
 #include "axon/util/logging.h"
 #include "axon/util/metrics.h"
 
@@ -25,14 +25,14 @@ std::string pending_key(const std::string& exchange, std::int64_t id) {
 
 
 EmsService::EmsService(const Config& config, net::HttpClient* http)
-    : config_(config), http_(http), venues_(std::make_unique<VenueState>()) {}
+    : config_(config), http_(http), exchanges_(std::make_unique<ExchangeState>()) {}
 
 EmsService::~EmsService() = default;
 
 void EmsService::register_session(const std::string& exchange,
-                                  oms::VenueSession* session) {
+                                  oms::ExchangeSession* session) {
   // Loud at startup rather than at the first order. A session can be perfectly
-  // live for a venue this build cannot construct a request for, and that
+  // live for an exchange this build cannot construct a request for, and that
   // combination used to surface as "order entry is unavailable: session is
   // live" -- a message that contradicts itself.
   if (ops_for(exchange) == nullptr) {
@@ -43,12 +43,12 @@ void EmsService::register_session(const std::string& exchange,
 }
 
 void EmsService::register_trade_session(const std::string& exchange,
-                                        oms::VenueSession* session) {
+                                        oms::ExchangeSession* session) {
   trade_sessions_[exchange] = session;
 }
 
-oms::VenueSession* EmsService::ws_entry_session(const std::string& exchange,
-                                               const VenueOps& ops) const {
+oms::ExchangeSession* EmsService::ws_entry_session(const std::string& exchange,
+                                               const ExchangeOps& ops) const {
   const auto& from = ops.own_trade_connection ? trade_sessions_ : sessions_;
   const auto it = from.find(exchange);
   return (it != from.end() && it->second != nullptr && it->second->live())
@@ -57,7 +57,7 @@ oms::VenueSession* EmsService::ws_entry_session(const std::string& exchange,
 }
 
 std::string EmsService::order_entry_unavailable(const std::string& exchange,
-                                                const VenueOps& ops) const {
+                                                const ExchangeOps& ops) const {
   // Reads the same map ws_entry_session just tried, because both are told
   // which one by the same field rather than each working it out.
   const auto& from = ops.own_trade_connection ? trade_sessions_ : sessions_;
@@ -65,7 +65,7 @@ std::string EmsService::order_entry_unavailable(const std::string& exchange,
   if (it == from.end() || it->second == nullptr) {
     return "no order-entry session for " + exchange;
   }
-  // Naming the state is the difference between "the venue is down" and "this
+  // Naming the state is the difference between "the exchange is down" and "this
   // build never connected", which are diagnosed completely differently.
   return exchange + " order entry is unavailable: session is " +
          oms::to_string(it->second->state());
@@ -86,7 +86,7 @@ void EmsService::place_order(const std::string& exchange,
     return;
   }
 
-  const VenueOps* ops = ops_for(exchange);
+  const ExchangeOps* ops = ops_for(exchange);
   if (ops == nullptr) {
     callback(OrderResult{false, std::nullopt,
                          "no order-entry implementation for " + exchange});
@@ -125,7 +125,7 @@ void EmsService::place_order(const std::string& exchange,
     }
     return;
   }
-  // There is no second way to place an order. A venue whose session is not
+  // There is no second way to place an order. An exchange whose session is not
   // live cannot trade, and saying so immediately beats queueing an order
   // against a connection that may be minutes from coming back -- by which
   // point the price the strategy decided on is long gone.
@@ -134,10 +134,10 @@ void EmsService::place_order(const std::string& exchange,
 }
 
 bool EmsService::place_via_websocket(const std::string& exchange,
-                                     const VenueOps& ops,
+                                     const ExchangeOps& ops,
                                      const models::OrderRequest& request,
                                      const OrderCallback& callback) {
-  oms::VenueSession* session = ws_entry_session(exchange, ops);
+  oms::ExchangeSession* session = ws_entry_session(exchange, ops);
   if (session == nullptr) {
     util::get_metrics().inc_ems_request_error(exchange, "place_order",
                                               "session_down");
@@ -146,7 +146,7 @@ bool EmsService::place_via_websocket(const std::string& exchange,
 
   char buf[kMaxRequestBytes];
 
-  const BuildContext ctx{venues_.get(), exchange_config(exchange),
+  const BuildContext ctx{exchanges_.get(), exchange_config(exchange),
                          core::wall_clock_ns() / 1'000'000LL};
   std::int64_t id = 0;
   const std::size_t n = ops.build_place(buf, sizeof(buf), request, ctx, id);
@@ -175,11 +175,11 @@ bool EmsService::place_via_websocket(const std::string& exchange,
 }
 
 bool EmsService::cancel_via_websocket(const std::string& exchange,
-                                      const VenueOps& ops,
+                                      const ExchangeOps& ops,
                                       const std::string& order_id,
                                       const std::string& symbol,
                                       const BoolCallback& callback) {
-  oms::VenueSession* session = ws_entry_session(exchange, ops);
+  oms::ExchangeSession* session = ws_entry_session(exchange, ops);
   if (session == nullptr) {
     return false;
   }
@@ -188,7 +188,7 @@ bool EmsService::cancel_via_websocket(const std::string& exchange,
   }
 
   char buf[kMaxRequestBytes];
-  const BuildContext ctx{venues_.get(), exchange_config(exchange),
+  const BuildContext ctx{exchanges_.get(), exchange_config(exchange),
                          core::wall_clock_ns() / 1'000'000LL};
   std::int64_t id = 0;
   const std::size_t n =
@@ -212,18 +212,18 @@ bool EmsService::cancel_via_websocket(const std::string& exchange,
 }
 
 bool EmsService::modify_via_websocket(const std::string& exchange,
-                                      const VenueOps& ops,
+                                      const ExchangeOps& ops,
                                       const models::Order& existing,
                                       std::optional<core::Qty> amount,
                                       std::optional<core::Price> price,
                                       const OrderCallback& callback) {
-  oms::VenueSession* session = ws_entry_session(exchange, ops);
+  oms::ExchangeSession* session = ws_entry_session(exchange, ops);
   if (session == nullptr) {
     return false;
   }
 
   char buf[kMaxRequestBytes];
-  const BuildContext ctx{venues_.get(), exchange_config(exchange),
+  const BuildContext ctx{exchanges_.get(), exchange_config(exchange),
                          core::wall_clock_ns() / 1'000'000LL};
   std::int64_t id = 0;
   const std::size_t n =
@@ -249,13 +249,13 @@ bool EmsService::modify_via_websocket(const std::string& exchange,
 // ---------------------------------------------------------------------------
 void EmsService::cancel_order(const std::string& exchange,
                               const std::string& order_id, BoolCallback callback) {
-  const VenueOps* ops = ops_for(exchange);
+  const ExchangeOps* ops = ops_for(exchange);
   if (ops == nullptr) {
     callback(false, "no order-entry implementation for " + exchange);
     return;
   }
 
-  // Most venues need the symbol, and a strategy only holds an id.
+  // Most exchanges need the symbol, and a strategy only holds an id.
   std::string symbol;
   if (ops->needs_symbol && lookup_) {
     if (const auto order = lookup_(order_id); order.has_value()) {
@@ -280,7 +280,7 @@ void EmsService::modify_order(const std::string& exchange,
                               std::optional<core::Qty> amount,
                               std::optional<core::Price> price,
                               OrderCallback callback) {
-  const VenueOps* ops = ops_for(exchange);
+  const ExchangeOps* ops = ops_for(exchange);
   if (ops == nullptr) {
     callback(OrderResult{false, std::nullopt,
                          "no order-entry implementation for " + exchange});
@@ -349,7 +349,7 @@ void EmsService::on_rpc_reply(const std::string& exchange, std::int64_t id,
   }
 
   if (!success) {
-    util::get_metrics().inc_order_place_failure(exchange, "venue_error");
+    util::get_metrics().inc_order_place_failure(exchange, "exchange_error");
     if (pending.is_place) {
       // A definite no: nothing is live, so the same id may be retried.
       const std::string key = exchange + ":" + pending.request.internal_order_id;
@@ -362,15 +362,15 @@ void EmsService::on_rpc_reply(const std::string& exchange, std::int64_t id,
     return;
   }
 
-  const VenueOps* ops = ops_for(exchange);
+  const ExchangeOps* ops = ops_for(exchange);
   if (ops == nullptr) {
-    // Unreachable in practice -- nothing can be in flight for a venue with no
+    // Unreachable in practice -- nothing can be in flight for an exchange with no
     // ops -- but a reply that matched a pending entry must always answer it.
     pending.order_callback(
         OrderResult{false, std::nullopt, "no order-entry implementation for " + exchange});
     return;
   }
-  pending.order_callback(ops->interpret_reply(payload, pending.request, *venues_));
+  pending.order_callback(ops->interpret_reply(payload, pending.request, *exchanges_));
 }
 
 void EmsService::remember_submission(const std::string& key) {
@@ -395,17 +395,17 @@ void EmsService::poll() {
       continue;
     }
     // A reply that never came. Answering with a timeout beats leaving a
-    // strategy blocked forever on a request the venue silently dropped.
+    // strategy blocked forever on a request the exchange silently dropped.
     AXON_LOG_WARN(log(), "request {} timed out", it->first);
     util::get_metrics().inc_order_place_failure(it->second.exchange, "timeout");
     if (it->second.order_callback) {
-      // Sent, unanswered: the venue may well have acted on it. Unknown, not
+      // Sent, unanswered: the exchange may well have acted on it. Unknown, not
       // failed -- and the id stays remembered so a blind retry is refused.
-      OrderResult unknown{false, std::nullopt, "the venue did not reply in time"};
+      OrderResult unknown{false, std::nullopt, "the exchange did not reply in time"};
       unknown.outcome_unknown = true;
       it->second.order_callback(unknown);
     } else if (it->second.bool_callback) {
-      it->second.bool_callback(false, "the venue did not reply in time");
+      it->second.bool_callback(false, "the exchange did not reply in time");
     }
     it = pending_.erase(it);
   }

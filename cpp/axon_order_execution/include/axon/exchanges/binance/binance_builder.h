@@ -17,7 +17,7 @@
 //     `signature`, exactly like REST. Nothing is authenticated once.
 //   * THE SIGNATURE PAYLOAD IS THE PARAMETERS SORTED BY NAME, joined as
 //     key=value&... -- unlike REST, where the order is whatever the query
-//     string happens to be. Get the order wrong and the venue answers -1022
+//     string happens to be. Get the order wrong and the exchange answers -1022
 //     with nothing useful in it.
 //
 // That last point is why the parameters below go through ONE emitter that
@@ -44,9 +44,9 @@
 
 #include "axon/core/decimal.h"
 #include "axon/models/order.h"
-#include "axon/venue/json_writer.h"
+#include "axon/exchanges/common/json_writer.h"
 
-namespace axon::venue::binance {
+namespace axon::exchanges::binance {
 
 inline constexpr std::string_view kProductionRestHost = "fapi.binance.com";
 inline constexpr std::string_view kTestnetRestHost = "testnet.binancefuture.com";
@@ -109,4 +109,4 @@ class BinanceBuilder {
   std::int64_t next_id_ = 1;
 };
 
-}  // namespace axon::venue::binance
+}  // namespace axon::exchanges::binance

@@ -27,9 +27,9 @@
 #include "axon/core/decimal.h"
 #include "axon/models/order.h"
 #include "axon/exchanges/deribit/deribit_protocol.h"
-#include "axon/venue/json_writer.h"
+#include "axon/exchanges/common/json_writer.h"
 
-namespace axon::venue::deribit {
+namespace axon::exchanges::deribit {
 
 // Comfortably above the largest message this builds.
 inline constexpr std::size_t kMaxRequestBytes = 1024;
@@ -99,4 +99,4 @@ class DeribitBuilder {
   std::int64_t next_id_ = 1;
 };
 
-}  // namespace axon::venue::deribit
+}  // namespace axon::exchanges::deribit

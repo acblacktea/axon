@@ -1,4 +1,4 @@
-// Bounds-checked byte writer shared by every venue builder.
+// Bounds-checked byte writer shared by every exchange builder.
 //
 // Outbound messages are assembled by copying literal runs and writing the
 // varying fields directly -- 12ns against 250ns for rapidjson's Writer and
@@ -8,7 +8,7 @@
 //
 // Every builder threads one Writer through and checks `ok` once at the end, so
 // a truncated message can never be sent. Truncation is worse than failure: the
-// venue would reject it at best and misparse it at worst.
+// exchange would reject it at best and misparse it at worst.
 
 #pragma once
 
@@ -19,10 +19,10 @@
 
 #include "axon/core/decimal.h"
 
-namespace axon::venue {
+namespace axon::exchanges {
 
 // ---------------------------------------------------------------------------
-// Writer primitives, exposed for the other venue builders to reuse.
+// Writer primitives, exposed for the other exchange builders to reuse.
 // ---------------------------------------------------------------------------
 namespace detail {
 
@@ -70,4 +70,4 @@ struct Writer {
 
 }  // namespace detail
 
-}  // namespace axon::venue
+}  // namespace axon::exchanges

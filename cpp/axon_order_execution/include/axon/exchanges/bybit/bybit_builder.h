@@ -6,7 +6,7 @@
 // _authenticate in oms/bybit/bybit_ws.py, which uses now + 10s.
 //
 // Individual order requests are NOT signed -- the connection is authenticated
-// once at login. (The reconciler's REST reads sign themselves, in venue_rest.)
+// once at login. (The reconciler's REST reads sign themselves, in exchange_rest.)
 //
 // ORDER ENTRY OVER THE WEBSOCKET is implemented below (`ws_place_order` and
 // friends). It removes the HTTP round trip -- 1-2 RTTs, most of a colocated
@@ -40,9 +40,9 @@
 #include "axon/core/decimal.h"
 #include "axon/models/order.h"
 #include "axon/exchanges/bybit/bybit_parser.h"
-#include "axon/venue/json_writer.h"
+#include "axon/exchanges/common/json_writer.h"
 
-namespace axon::venue::bybit {
+namespace axon::exchanges::bybit {
 
 inline constexpr std::string_view kProductionRestHost = "api.bybit.com";
 inline constexpr std::string_view kTestnetRestHost = "api-testnet.bybit.com";
@@ -140,4 +140,4 @@ class BybitBuilder {
   std::int64_t next_id_ = 1;
 };
 
-}  // namespace axon::venue::bybit
+}  // namespace axon::exchanges::bybit

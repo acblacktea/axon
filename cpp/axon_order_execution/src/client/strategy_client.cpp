@@ -240,7 +240,7 @@ std::optional<transport::Json> StrategyClient::request(
 
     // Replies are matched to this request by request_id, never by arrival
     // order. A request that times out here is still answered later -- the
-    // engine's own wait on the venue (websocket.request_timeout_seconds, 30s
+    // engine's own wait on the exchange (websocket.request_timeout_seconds, 30s
     // by default) is longer than ours -- and that late reply sits in the
     // socket. Taking the next reply blindly would hand it to the NEXT request,
     // and every request after that would get its predecessor's answer.
@@ -332,8 +332,8 @@ PlaceResult StrategyClient::submit_order(const std::string& exchange,
     }
     return out;
   }
-  // Our own timeout, or the engine's report of the venue's silence: either
-  // way the request may have reached the venue.
+  // Our own timeout, or the engine's report of the exchange's silence: either
+  // way the request may have reached the exchange.
   const bool engine_unknown = out.error.rfind(transport::kOutcomeUnknownPrefix, 0) == 0;
   if (timed_out || engine_unknown) {
     out.outcome = PlaceOutcome::kUnknown;

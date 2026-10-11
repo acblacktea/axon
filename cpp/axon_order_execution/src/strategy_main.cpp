@@ -162,7 +162,7 @@ int main(int argc, char** argv) {
 
   if (!hot_ping.empty()) {
     // Deliberately a CANCEL of an id that cannot exist: it proves the ring,
-    // the engine's dequeue and the EMS dispatch all work, and the venue
+    // the engine's dequeue and the EMS dispatch all work, and the exchange
     // rejects it without anything being traded. Safe to run against live keys.
     if (!client.fast_path_available()) {
       AXON_LOG_ERROR(log, "--hot-ping needs --shm and an engine that created "

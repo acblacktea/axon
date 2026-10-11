@@ -7,7 +7,7 @@
 //   where timestamp is a SECOND-resolution epoch as a string.
 //
 // Individual order requests are not signed; the connection is authenticated
-// once at login. (The reconciler's REST reads sign themselves, in venue_rest.)
+// once at login. (The reconciler's REST reads sign themselves, in exchange_rest.)
 //
 // Two things that catch people out, both preserved here:
 //   * OKX signatures are BASE64, not hex. Bybit and Binance use hex.
@@ -27,7 +27,7 @@
 // UNVERIFIED, AND NOW LOAD-BEARING. The `op` names and the envelope shape came
 // from OKX's documentation, not from the running Python (which used REST).
 // Everything else in this file was transcribed from code that has been
-// reconciling against the live venue for a long time.
+// reconciling against the live exchange for a long time.
 //
 // The REST order path has been removed, so there is no proven alternative
 // beside this one any more: if the mapping is wrong, orders do not go out.
@@ -43,9 +43,9 @@
 
 #include "axon/core/decimal.h"
 #include "axon/models/order.h"
-#include "axon/venue/json_writer.h"
+#include "axon/exchanges/common/json_writer.h"
 
-namespace axon::venue::okx {
+namespace axon::exchanges::okx {
 
 inline constexpr std::string_view kProductionRestHost = "www.okx.com";
 
@@ -147,4 +147,4 @@ class OkxBuilder {
   std::int64_t next_id_ = 1;
 };
 
-}  // namespace axon::venue::okx
+}  // namespace axon::exchanges::okx

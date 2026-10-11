@@ -107,7 +107,7 @@ TEST(WsConnection, ConnectsOverTlsAndEchoesAMessage) {
 }
 
 TEST(WsConnection, WorksWithoutTls) {
-  // ws:// rather than wss://. No venue uses it, but the plaintext path is what
+  // ws:// rather than wss://. No exchange uses it, but the plaintext path is what
   // makes a failure attributable to TLS or not.
   WsTestServer server({.use_tls = false});
   net::WsConnection conn;
@@ -159,7 +159,7 @@ TEST(WsConnection, RejectsAHostnameMismatch) {
 }
 
 TEST(WsConnection, AnswersPingsAutomatically) {
-  // A venue that does not get its pong closes the connection, so this can
+  // An exchange that does not get its pong closes the connection, so this can
   // never be the application's job.
   WsTestServer server({.ping_on_open = true});
   net::TlsContext ctx = trusting_context(server);
@@ -184,7 +184,7 @@ TEST(WsConnection, DoesNotLoseAFrameSentWithTheHandshakeResponse) {
   // A server may put its first frame in the same segment as the 101. A client
   // that consumes the whole buffer instead of exactly the headers eats it, and
   // the symptom is one missing message at connect -- easy to blame on the
-  // venue.
+  // exchange.
   WsTestServer server({.greeting = R"({"jsonrpc":"2.0","method":"hello"})"});
   net::TlsContext ctx = trusting_context(server);
 
@@ -388,7 +388,7 @@ TEST(WsConnection, ConnectionRefusedIsReported) {
 }
 
 TEST(WsConnection, ReceiveBufferIsPaddedForTheJsonParser) {
-  // A venue parser reads straight out of the receive buffer, and simdjson
+  // An exchange parser reads straight out of the receive buffer, and simdjson
   // reads past the end of the document. Without the reserved padding that is
   // a heap overread -- which ASan catches here and production does not.
   WsTestServer server({.greeting = R"({"a":1})"});

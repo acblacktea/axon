@@ -3,9 +3,9 @@
 //     axon_engine --config config.yaml
 //
 // ONE THREAD, BUSY-POLLED. The Python runs an asyncio loop with a task per
-// venue and a task per command; this runs a single loop that polls every venue
+// exchange and a task per command; this runs a single loop that polls every exchange
 // session and the ZMQ server in turn. That is the whole point of the design:
-// no scheduler, no wakeups, no cross-thread hops on the path from a venue
+// no scheduler, no wakeups, no cross-thread hops on the path from an exchange
 // message to the order book.
 //
 // The cost is that CPU sits at 100% on the engine core. That is the entry fee
@@ -31,7 +31,7 @@
 #include "axon/oms/oms_service.h"
 #include "axon/risk/risk_feed.h"
 #include "axon/risk/risk_manager.h"
-#include "axon/oms/venue_connections.h"
+#include "axon/oms/exchange_connections.h"
 #include "axon/transport/hot_messages.h"
 #include "axon/transport/shm_bridge.h"
 #include "axon/transport/wire.h"
@@ -64,7 +64,7 @@ class StrategyPublisher final : public axon::oms::OmsListener {
   StrategyPublisher(axon::transport::ZmqServer& zmq, axon::transport::ShmBridge& shm)
       : zmq_(zmq), shm_(shm) {}
 
-  // Called before the OMS decodes anything: the ring gets the venue's bytes
+  // Called before the OMS decodes anything: the ring gets the exchange's bytes
   // ahead of every allocation on the control-plane side.
   void on_order_message(const axon::transport::OrderUpdateMsg& msg) override {
     shm_.publish_order(msg, msg.strategy_id.view());
@@ -98,7 +98,7 @@ class StrategyPublisher final : public axon::oms::OmsListener {
 // ---------------------------------------------------------------------------
 // The engine: wiring, the loop, and the strategy-facing command surface.
 //
-//   VenueConnections  every connection to every venue
+//   ExchangeConnections  every connection to every exchange
 //   OmsService        orders, fills, positions, reconciliation
 //   EmsService        order entry
 //   RiskManager       pre-trade checks; consulted by the EMS, fed by the OMS
@@ -110,10 +110,10 @@ class Engine {
       : config_(std::move(config)), log_(axon::util::get_logger("engine")) {}
 
   void start() {
-    connections_ = std::make_unique<axon::oms::VenueConnections>(config_);
+    connections_ = std::make_unique<axon::oms::ExchangeConnections>(config_);
     oms_ = std::make_unique<axon::oms::OmsService>(config_);
     ems_ = std::make_unique<axon::ems::EmsService>(config_, &connections_->http());
-    // Cancel and amend on the perpetual venues need the order's symbol, which
+    // Cancel and amend on the perpetual exchanges need the order's symbol, which
     // only the OMS knows.
     ems_->set_order_lookup([this](const std::string& order_id) {
       return oms_->get_order(order_id);
@@ -132,10 +132,10 @@ class Engine {
                                       std::string_view error) {
       ems_->on_rpc_reply(exchange, id, ok, payload, error);
     });
-    for (const auto& venue : connections_->venues()) {
-      ems_->register_session(venue, connections_->session(venue));
-      if (auto* trade = connections_->trade_session(venue)) {
-        ems_->register_trade_session(venue, trade);
+    for (const auto& exchange : connections_->exchanges()) {
+      ems_->register_session(exchange, connections_->session(exchange));
+      if (auto* trade = connections_->trade_session(exchange)) {
+        ems_->register_trade_session(exchange, trade);
       }
     }
     oms_->start(connections_->rests());
@@ -164,7 +164,7 @@ class Engine {
   }
 
   void run() {
-    AXON_LOG_INFO(log_, "engine running; {} venue session(s)", connections_->venues().size());
+    AXON_LOG_INFO(log_, "engine running; {} exchange session(s)", connections_->exchanges().size());
 
     std::uint64_t iterations = 0;
     double last_report = seconds();
@@ -220,7 +220,7 @@ class Engine {
       // Loud: an engine with no limits sends whatever a strategy's bug says.
       AXON_LOG_WARN(log_,
                     "NO PRE-TRADE RISK LIMITS ARE CONFIGURED (cpp.risk). Every order a "
-                    "strategy sends will reach the venue. Only the kill switch applies.");
+                    "strategy sends will reach the exchange. Only the kill switch applies.");
     } else {
       AXON_LOG_INFO(log_, "pre-trade risk: {} instrument override(s), {} orders/s/strategy",
                     config_.risk.instruments.size(),
@@ -491,7 +491,7 @@ class Engine {
           request->strategy_id = command.strategy_id;
         }
         // DEFERRED. Placing an order is a network round trip; replying inline
-        // would stall every venue feed for its duration.
+        // would stall every exchange feed for its duration.
         place(exchange, *request,
               [sink, request_id = command.request_id](const axon::ems::OrderResult& r) mutable {
                 if (!r.success) {
@@ -586,7 +586,7 @@ class Engine {
         axon::transport::Json array = axon::transport::Json::array();
         // Served from the cache the position reconciler refreshes, not from a
         // fresh REST call: a strategy polling positions should not add a round
-        // trip to the venue each time.
+        // trip to the exchange each time.
         for (const auto& p : oms_->positions(exchange)) {
           if (!currency.empty() && p.instrument.rfind(currency, 0) != 0) {
             continue;
@@ -605,7 +605,7 @@ class Engine {
   // Declaration order is destruction order in reverse: everything that holds
   // a pointer into the connections (EMS sessions, OMS reconcilers) is
   // declared after them and so destroyed first.
-  std::unique_ptr<axon::oms::VenueConnections> connections_;
+  std::unique_ptr<axon::oms::ExchangeConnections> connections_;
   std::unique_ptr<axon::oms::OmsService> oms_;
   std::unique_ptr<axon::ems::EmsService> ems_;
   axon::risk::RiskManager risk_;

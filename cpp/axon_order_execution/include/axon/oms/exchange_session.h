@@ -1,9 +1,9 @@
-// One venue's private WebSocket session: connect, authenticate, subscribe,
+// One exchange's private WebSocket session: connect, authenticate, subscribe,
 // consume, reconnect.
 //
 // Replaces the reconnect/heartbeat machinery in util/websocket_base.py plus
-// the per-venue subclasses. Everything is driven by poll(), which never
-// blocks, so one thread can own several venues.
+// the per-exchange subclasses. Everything is driven by poll(), which never
+// blocks, so one thread can own several exchanges.
 //
 // SESSION STATE, which is the part that matters:
 //
@@ -14,10 +14,10 @@
 // A drop at ANY point goes to kBackoff and then all the way round again. There
 // is no partial recovery: re-authenticating on a socket that already failed
 // once is how a session ends up half-subscribed, receiving order updates but
-// not fills, which looks like the venue is broken.
+// not fills, which looks like the exchange is broken.
 //
 // Backoff is exponential with jitter, matching _reconnect in the Python. The
-// jitter matters more than it looks: without it, every venue session in a
+// jitter matters more than it looks: without it, every exchange session in a
 // fleet that lost connectivity together reconnects in lockstep and hits the
 // rate limit as one.
 
@@ -32,7 +32,7 @@
 #include "axon/config.h"
 #include "axon/models/portfolio.h"
 #include "axon/net/ws_connection.h"
-#include "axon/oms/venue_rest.h"
+#include "axon/oms/exchange_rest.h"
 #include "axon/transport/hot_messages.h"
 
 namespace axon::oms {
@@ -44,7 +44,7 @@ enum class SessionState : std::uint8_t {
   kSubscribing = 3,
   kLive = 4,
   kBackoff = 5,
-  // Terminal: the credentials are wrong, or the venue said something that
+  // Terminal: the credentials are wrong, or the exchange said something that
   // retrying cannot fix. Distinct from kBackoff so a supervisor can stop
   // rather than loop forever against a 401.
   kFatal = 6,
@@ -53,36 +53,36 @@ enum class SessionState : std::uint8_t {
 const char* to_string(SessionState s) noexcept;
 
 // What a session emits. Deliberately the fixed-layout hot messages rather than
-// domain objects: the venue parsers produce them and the consumer copies out
+// domain objects: the exchange parsers produce them and the consumer copies out
 // what it needs, so nothing allocates between the socket and the order book.
-struct VenueSessionHandlers {
+struct ExchangeSessionHandlers {
   std::function<void(const transport::OrderUpdateMsg&)> on_order;
   std::function<void(const transport::FillMsg&)> on_fill;
   std::function<void(const models::AccountSummary&)> on_account;
   // Called once each time the session reaches kLive, including after a
-  // reconnect. A consumer that caches venue state should invalidate here --
+  // reconnect. A consumer that caches exchange state should invalidate here --
   // anything that happened while disconnected was missed.
   std::function<void()> on_live;
   std::function<void(const std::string&)> on_error;
 
   // A reply to a request WE sent that the session itself did not claim --
-  // i.e. an order-entry response. `payload` is the raw venue message so the
-  // EMS can parse the venue's own result shape without the session needing to
+  // i.e. an order-entry response. `payload` is the raw exchange message so the
+  // EMS can parse the exchange's own result shape without the session needing to
   // know anything about orders.
   std::function<void(std::int64_t id, bool success, std::string_view payload,
                      std::string_view error)>
       on_rpc_reply;
 };
 
-class VenueSession {
+class ExchangeSession {
  public:
-  VenueSession(ExchangeConfig exchange, WebSocketConfig ws_config,
+  ExchangeSession(ExchangeConfig exchange_config, WebSocketConfig ws_config,
                RuntimeConfig runtime, const net::TlsContext* tls,
-               VenueSessionHandlers handlers);
-  virtual ~VenueSession();
+               ExchangeSessionHandlers handlers);
+  virtual ~ExchangeSession();
 
-  VenueSession(const VenueSession&) = delete;
-  VenueSession& operator=(const VenueSession&) = delete;
+  ExchangeSession(const ExchangeSession&) = delete;
+  ExchangeSession& operator=(const ExchangeSession&) = delete;
 
   // Non-blocking. Call from the engine loop.
   void poll();
@@ -93,29 +93,29 @@ class VenueSession {
   SessionState state() const noexcept { return state_; }
   // live() and send_raw() are virtual so the EMS can be tested against a fake
   // connection -- timeouts, duplicate submissions and reply handling are
-  // otherwise only reachable with a venue on the other end. One indirect call
+  // otherwise only reachable with an exchange on the other end. One indirect call
   // per order, against a network round trip.
   virtual bool live() const noexcept { return state_ == SessionState::kLive; }
   const std::string& exchange_name() const noexcept { return exchange_.name; }
   const std::string& last_error() const noexcept { return last_error_; }
   std::uint64_t reconnect_count() const noexcept { return reconnects_; }
 
-  // Sends a raw venue message on the live connection. Order entry over the
+  // Sends a raw exchange message on the live connection. Order entry over the
   // WebSocket goes through here. Returns false if the session is not live or
   // the send buffer is full -- both of which the caller must handle rather
   // than assume away.
   virtual bool send_raw(std::string_view payload);
 
  protected:
-  // Per-venue hooks. Each returns false if it could not proceed, which drops
+  // Per-exchange hooks. Each returns false if it could not proceed, which drops
   // the session into backoff.
   virtual bool send_authentication() = 0;
   virtual bool send_subscriptions() = 0;
-  // Feeds one inbound frame to the venue parser. Returns false on a protocol
+  // Feeds one inbound frame to the exchange parser. Returns false on a protocol
   // error serious enough to warrant reconnecting.
   virtual bool handle_frame(const std::byte* data, std::size_t len,
                             std::size_t capacity) = 0;
-  // Called when the venue's reply to authentication arrives. Default
+  // Called when the exchange's reply to authentication arrives. Default
   // implementation assumes any successful reply means authenticated.
   virtual void on_auth_reply(bool success, const std::string& error);
   virtual void on_subscribe_reply(bool success, const std::string& error);
@@ -128,7 +128,7 @@ class VenueSession {
   void note_subscribed();
   void fail_session(std::string reason, bool fatal = false);
 
-  // A venue may need to do work BEFORE the socket is opened -- Binance has to
+  // An exchange may need to do work BEFORE the socket is opened -- Binance has to
   // fetch a listenKey over REST. Returning false holds the session in
   // kConnecting until a later poll; the default does nothing and connects
   // immediately.
@@ -139,7 +139,7 @@ class VenueSession {
   ExchangeConfig exchange_;
   WebSocketConfig ws_config_;
   RuntimeConfig runtime_;
-  VenueSessionHandlers handlers_;
+  ExchangeSessionHandlers handlers_;
 
  private:
   void enter_backoff();
@@ -159,7 +159,7 @@ class VenueSession {
 
   // Deadline for the CURRENT handshake stage: connect, authenticate,
   // subscribe. Each stage gets the full budget and resets it on entry.
-  // Without this a venue that accepts the auth frame and never replies leaves
+  // Without this an exchange that accepts the auth frame and never replies leaves
   // the session parked forever -- the liveness watchdog below only runs once
   // the session is live, so nothing else would ever notice.
   double handshake_deadline_ = 0.0;
@@ -170,7 +170,7 @@ class VenueSession {
   std::unique_ptr<Bridge> bridge_;
 };
 
-// Builds the SECOND connection a venue needs for WebSocket order entry, or
+// Builds the SECOND connection an exchange needs for WebSocket order entry, or
 // nullptr when it needs none.
 //
 //   binance  ws-fapi.binance.com/ws-fapi/v1 -- a different host from the user
@@ -186,20 +186,20 @@ class VenueSession {
 // order-entry reply and goes to handlers.on_rpc_reply. Because it is otherwise
 // silent, it sends its own keepalive so the base class's silence watchdog does
 // not mistake an idle trade connection for a dead one.
-std::unique_ptr<VenueSession> make_trade_session(
-    const ExchangeConfig& exchange, const WebSocketConfig& ws_config,
+std::unique_ptr<ExchangeSession> make_trade_session(
+    const ExchangeConfig& exchange_config, const WebSocketConfig& ws_config,
     const RuntimeConfig& runtime, const net::TlsContext* tls,
-    VenueSessionHandlers handlers);
+    ExchangeSessionHandlers handlers);
 
-// Builds the right subclass for a venue name. Returns nullptr for an unknown
-// venue rather than throwing, so a config listing an exchange this build does
+// Builds the right subclass for an exchange name. Returns nullptr for an unknown
+// exchange rather than throwing, so a config listing an exchange this build does
 // not support fails with a clear message at startup.
 // `rest` is required by Binance, whose user data stream is keyed by a
 // listenKey obtained over REST and appended to the URL; the other three
 // authenticate over the socket and ignore it.
-std::unique_ptr<VenueSession> make_venue_session(
-    const ExchangeConfig& exchange, const WebSocketConfig& ws_config,
-    const RuntimeConfig& runtime, const net::TlsContext* tls, VenueRest* rest,
-    VenueSessionHandlers handlers);
+std::unique_ptr<ExchangeSession> make_exchange_session(
+    const ExchangeConfig& exchange_config, const WebSocketConfig& ws_config,
+    const RuntimeConfig& runtime, const net::TlsContext* tls, ExchangeRest* rest,
+    ExchangeSessionHandlers handlers);
 
 }  // namespace axon::oms

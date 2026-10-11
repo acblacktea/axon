@@ -1,9 +1,9 @@
-// Order-entry dispatch: which venue gets which treatment.
+// Order-entry dispatch: which exchange gets which treatment.
 //
 // The EMS used to answer that question with `exchange == "..."` in sixteen
 // places. It now answers it once, from a table, and these tests pin the four
 // behaviours that table encodes -- because until this file existed NOTHING
-// covered EmsService at all. The suite's other 395 tests exercise the venue
+// covered EmsService at all. The suite's other 395 tests exercise the exchange
 // BUILDERS, which is a different layer: they prove the bytes are right, not
 // that the right builder was picked.
 //
@@ -18,7 +18,7 @@
 #include "axon/config.h"
 #include "axon/ems/ems_service.h"
 #include "axon/models/order.h"
-#include "axon/oms/venue_session.h"
+#include "axon/oms/exchange_session.h"
 
 namespace {
 
@@ -35,10 +35,10 @@ using axon::models::OrderType;
 // A session that can be constructed but never connects. `live()` is false, so
 // order entry is always unavailable -- which is what lets these tests read the
 // REASON the EMS gives without any I/O.
-class StubSession : public axon::oms::VenueSession {
+class StubSession : public axon::oms::ExchangeSession {
  public:
   explicit StubSession(std::string name)
-      : VenueSession(make_config(std::move(name)), {}, {}, nullptr, {}) {}
+      : ExchangeSession(make_config(std::move(name)), {}, {}, nullptr, {}) {}
 
  protected:
   bool send_authentication() override { return true; }
@@ -57,13 +57,13 @@ class StubSession : public axon::oms::VenueSession {
   }
 };
 
-Config config_with(const std::string& venue) {
+Config config_with(const std::string& exchange) {
   Config c;
   ExchangeConfig e;
-  e.name = venue;
+  e.name = exchange;
   e.api_key = "key";
   e.api_secret = "secret";
-  c.exchanges[venue] = e;
+  c.exchanges[exchange] = e;
   return c;
 }
 
@@ -100,15 +100,15 @@ struct Capture {
 }  // namespace
 
 // ===========================================================================
-// A venue with no implementation must say so, not blame the session
+// An exchange with no implementation must say so, not blame the session
 // ===========================================================================
 
-// The bug this replaces: an unknown venue fell through the builder chain and
+// The bug this replaces: an unknown exchange fell through the builder chain and
 // was reported by order_entry_unavailable(), which -- if a session happened to
 // be registered and live -- answered "order entry is unavailable: session is
 // live". A message that contradicts itself sends an operator to the wrong
 // place.
-TEST(EmsDispatch, UnknownVenueIsNamedExplicitlyOnPlace) {
+TEST(EmsDispatch, UnknownExchangeIsNamedExplicitlyOnPlace) {
   EmsService ems(Config{}, nullptr);
   Capture c;
   ems.place_order("kraken", limit_buy(), c.order_cb());
@@ -120,7 +120,7 @@ TEST(EmsDispatch, UnknownVenueIsNamedExplicitlyOnPlace) {
   EXPECT_NE(c.result.error.find("kraken"), std::string::npos) << c.result.error;
 }
 
-TEST(EmsDispatch, UnknownVenueIsNamedExplicitlyOnCancel) {
+TEST(EmsDispatch, UnknownExchangeIsNamedExplicitlyOnCancel) {
   EmsService ems(Config{}, nullptr);
   Capture c;
   ems.cancel_order("kraken", "id-1", c.bool_cb());
@@ -131,7 +131,7 @@ TEST(EmsDispatch, UnknownVenueIsNamedExplicitlyOnCancel) {
       << c.result.error;
 }
 
-TEST(EmsDispatch, UnknownVenueIsNamedExplicitlyOnModify) {
+TEST(EmsDispatch, UnknownExchangeIsNamedExplicitlyOnModify) {
   EmsService ems(Config{}, nullptr);
   Capture c;
   ems.modify_order("kraken", "id-1", std::nullopt, std::nullopt, c.order_cb());
@@ -219,8 +219,8 @@ TEST(EmsDispatch, DeribitCancelDoesNotNeedTheOrderLocally) {
       << c.result.error;
 }
 
-// Every other venue needs the symbol, which only the order store has. Failing
-// here is better than sending a request the venue will reject: it costs no
+// Every other exchange needs the symbol, which only the order store has. Failing
+// here is better than sending a request the exchange will reject: it costs no
 // round trip and it names the real problem.
 TEST(EmsDispatch, OkxCancelRequiresTheOrderLocally) {
   EmsService ems(config_with("okx"), nullptr);

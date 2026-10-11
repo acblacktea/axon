@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS account_summaries (
 )SQL";
 
 // Positions are a SNAPSHOT keyed by (exchange, instrument), not a log: the
-// venue reports the current book on every pull, so the row is overwritten.
+// exchange reports the current book on every pull, so the row is overwritten.
 // Greeks are NOT NULL and zero for a future, matching the model, where they
 // are plain Price rather than optional.
 constexpr const char* kCreatePositions = R"SQL(
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS position_summaries (
 CREATE INDEX IF NOT EXISTS idx_positions_exchange ON position_summaries(exchange);
 )SQL";
 
-// ON CONFLICT keeps an internal_order_id that a later venue update does not
+// ON CONFLICT keeps an internal_order_id that a later exchange update does not
 // carry -- COALESCE, matching the Python. Losing it would orphan the order
 // from the strategy that placed it.
 constexpr const char* kUpsertOrder = R"SQL(
@@ -147,7 +147,7 @@ ON CONFLICT (order_id) DO UPDATE SET
     updated_at = EXCLUDED.updated_at
 )SQL";
 
-// Fills are append-only facts keyed by the venue's trade_id, which is exactly
+// Fills are append-only facts keyed by the exchange's trade_id, which is exactly
 // what makes DO NOTHING correct: the same fill legitimately arrives twice,
 // once on the feed and once from reconciliation.
 constexpr const char* kInsertFill = R"SQL(
@@ -334,7 +334,7 @@ void PostgresWriter::Impl::run() {
       tx.commit();
     } catch (const std::exception& e) {
       // A failed batch is lost. Reconnecting and retrying it would risk
-      // reordering rows against newer ones already queued; the venue plus
+      // reordering rows against newer ones already queued; the exchange plus
       // reconciliation is the recovery path, not this table.
       AXON_LOG_ERROR(log(), "batch write failed ({} rows): {}", batch.size(),
                        e.what());

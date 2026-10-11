@@ -43,7 +43,7 @@ TlsContext::TlsContext() {
     throw TlsError("SSL_CTX_new failed: " + drain_openssl_errors());
   }
 
-  // TLS 1.2 is the floor. Every venue supports 1.2 and most support 1.3;
+  // TLS 1.2 is the floor. Every exchange supports 1.2 and most support 1.3;
   // anything older has known breaks and is not worth the compatibility.
   SSL_CTX_set_min_proto_version(ctx_, TLS1_2_VERSION);
 
@@ -80,7 +80,7 @@ TlsContext& TlsContext::operator=(TlsContext&& o) noexcept {
 void TlsContext::use_default_trust_store() {
   if (SSL_CTX_set_default_verify_paths(ctx_) != 1) {
     // Failing loudly matters: continuing with an empty trust store would make
-    // every certificate invalid, which looks like a venue problem.
+    // every certificate invalid, which looks like an exchange problem.
     throw TlsError("could not load the default trust store: " +
                    drain_openssl_errors());
   }
@@ -274,7 +274,7 @@ void TlsStream::start_client(const TlsContext& ctx, std::string_view hostname) {
 
   const std::string host(hostname);
 
-  // SNI. Without it a venue behind shared infrastructure returns the wrong
+  // SNI. Without it an exchange behind shared infrastructure returns the wrong
   // certificate, or none.
   SSL_ctrl(ssl_, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name,
            const_cast<char*>(host.c_str()));

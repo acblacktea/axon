@@ -1,4 +1,4 @@
-// Pre-trade risk: the checks every order passes before it reaches a venue.
+// Pre-trade risk: the checks every order passes before it reaches an exchange.
 //
 // WHY IT LIVES IN THE ENGINE. A strategy with a bug -- a loop that never
 // stops placing, a price off by a factor of ten, a sign error on the side --
@@ -18,9 +18,9 @@
 // POSITION is the one that needs state, and it is computed from three sources
 // so that no single lagging one can let an order through:
 //
-//   * the venue's position, refreshed by the reconciler's position pass;
+//   * the exchange's position, refreshed by the reconciler's position pass;
 //   * fills since then, applied as they arrive;
-//   * every working order -- including ones just sent that the venue has not
+//   * every working order -- including ones just sent that the exchange has not
 //     acknowledged yet. Counting only acknowledged orders would let a burst of
 //     orders through before the first ack arrives, which is exactly the burst
 //     a runaway strategy produces.
@@ -96,13 +96,13 @@ class RiskManager {
   // Sent: counts toward position and rate from now, before any ack.
   void on_order_sent(const std::string& exchange, const models::OrderRequest& request,
                      double now_seconds);
-  // Definitively refused by the venue: nothing is live, release it.
+  // Definitively refused by the exchange: nothing is live, release it.
   void on_order_rejected(const std::string& exchange, const models::OrderRequest& request);
 
   // --- what the engine feeds -------------------------------------------------
   void on_order_update(const models::Order& order);
   void on_fill(const models::Fill& fill);
-  // The venue's positions for one exchange, replacing whatever was held.
+  // The exchange's positions for one exchange, replacing whatever was held.
   void on_positions(const std::string& exchange,
                     const std::vector<models::Position>& positions);
   void update_reference_price(const std::string& exchange, const std::string& instrument,
@@ -140,7 +140,7 @@ class RiskManager {
   //
   // The instruments whose reference price is refreshed over REST: every
   // "exchange:instrument" key under cpp.risk.instruments. Bare "instrument"
-  // keys name no venue to ask, so they are not targets.
+  // keys name no exchange to ask, so they are not targets.
   struct ReferenceTarget {
     std::string exchange;
     std::string instrument;
@@ -153,7 +153,7 @@ class RiskManager {
   bool reference_refresh_due(double now_seconds);
 
   // --- introspection -------------------------------------------------------------
-  // Signed net position as last known (venue snapshot plus fills since).
+  // Signed net position as last known (exchange snapshot plus fills since).
   core::Qty position(const std::string& exchange, const std::string& instrument) const;
   // Signed worst-case position on each side if every working order filled.
   struct Exposure {
@@ -181,7 +181,7 @@ class RiskManager {
   static std::string key(std::string_view exchange, std::string_view instrument);
   // Working orders are keyed by internal_order_id where there is one -- so an
   // order counted when sent is the same entry its first update replaces --
-  // and by venue order id otherwise.
+  // and by exchange order id otherwise.
   static std::string order_key(std::string_view exchange, const models::Order& order);
 
   std::optional<RiskRejection> check(const std::string& exchange,

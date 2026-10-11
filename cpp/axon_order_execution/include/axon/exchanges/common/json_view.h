@@ -5,11 +5,11 @@
 // On-Demand API is a value proposition with sharp edges -- forward-only
 // iteration, error codes on every accessor, a padding requirement on the input
 // buffer, and objects that are invalidated as soon as you move past them. Those
-// constraints belong in one file, not sprinkled through four venue parsers
+// constraints belong in one file, not sprinkled through four exchange parsers
 // where each one will get them subtly wrong.
 //
 // The wrapper is header-only and every method is a thin forwarding call, so it
-// costs nothing at runtime. It exists to make the venue parsers read like the
+// costs nothing at runtime. It exists to make the exchange parsers read like the
 // Python they are ported from.
 //
 // THREE SIMDJSON CONSTRAINTS THIS ENCAPSULATES
@@ -21,7 +21,7 @@
 //
 //   2. FORWARD-ONLY ITERATION. Requesting fields in a different order from the
 //      document costs a rescan, turning an O(n) parse into O(n*fields). The
-//      venue parsers therefore read fields in document order, and each one says
+//      exchange parsers therefore read fields in document order, and each one says
 //      so where it matters.
 //
 //   3. LIFETIME. Every string_view points into the ORIGINAL buffer, not into
@@ -44,9 +44,9 @@
 
 #include "axon/core/decimal.h"
 #include "axon/core/timestamp.h"
-#include "axon/venue/json_padding.h"
+#include "axon/exchanges/common/json_padding.h"
 
-namespace axon::venue {
+namespace axon::exchanges {
 
 // Bytes of readable slack simdjson requires past the end of a document.
 // Receive buffers must reserve this beyond their usable capacity.
@@ -100,7 +100,7 @@ class Value {
   // Not laxness for its own sake: Bybit and OKX quote every numeric field
   // including their millisecond timestamps ("createdTime":"1786106096123"),
   // while Deribit and Binance's event times are bare numbers. One accessor
-  // that handles both is what lets four venue parsers share this file instead
+  // that handles both is what lets four exchange parsers share this file instead
   // of each inventing its own coercion.
   std::optional<std::int64_t> as_int() noexcept {
     if (!valid_) {
@@ -156,7 +156,7 @@ class Value {
     return core::Price::from_string(trim(raw));
   }
 
-  // Milliseconds since epoch -- what every venue we support uses.
+  // Milliseconds since epoch -- what every exchange we support uses.
   std::optional<core::Timestamp> as_millis_timestamp() noexcept {
     const auto ms = as_int();
     if (!ms.has_value()) {
@@ -353,4 +353,4 @@ class Document {
   std::string scratch_;
 };
 
-}  // namespace axon::venue
+}  // namespace axon::exchanges

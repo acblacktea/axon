@@ -1,4 +1,4 @@
-// Small helpers shared by the venue sessions in exchanges/<venue>/. Internal to oms/.
+// Small helpers shared by the exchange sessions in exchanges/<exchange>/. Internal to oms/.
 
 #pragma once
 
@@ -6,7 +6,7 @@
 #include <optional>
 
 #include "axon/core/clock.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
 namespace axon::oms::detail {
 
@@ -16,7 +16,7 @@ inline double monotonic_seconds() {
 
 // Correlates on `reqId` (Bybit) or `id` (Binance, OKX), STRINGS carrying
 // digits. The EMS keys its pending map on the integer.
-inline std::optional<std::int64_t> parse_string_id(venue::Value v) noexcept {
+inline std::optional<std::int64_t> parse_string_id(exchanges::Value v) noexcept {
   const auto text = v.as_string();
   if (!text.has_value() || text->empty()) {
     return std::nullopt;

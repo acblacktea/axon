@@ -42,22 +42,22 @@ OmsService::OmsService(const Config& config) : config_(config) {
 
 OmsService::~OmsService() { stop(); }
 
-void OmsService::start(const std::map<std::string, VenueRest*>& rests) {
-  for (const auto& [venue, exchange] : config_.exchanges) {
-    const auto it = rests.find(venue);
+void OmsService::start(const std::map<std::string, ExchangeRest*>& rests) {
+  for (const auto& [exchange, exchange_config] : config_.exchanges) {
+    const auto it = rests.find(exchange);
     if (it == rests.end() || it->second == nullptr) {
       AXON_LOG_WARN(log(), "[{}] no reconciler: a dropped feed message will not be "
-                           "recovered on this venue", venue);
+                           "recovered on this exchange", exchange);
       continue;
     }
     ReconcilerCallbacks rc;
     rc.on_recovered_fill = [this](const models::Fill& fill) { record_recovered_fill(fill); };
-    rc.on_positions = [this, venue = venue](const std::vector<models::Position>& positions) {
-      portfolio_.update_positions(venue, positions);
-      for (auto* l : listeners_) l->on_positions(venue, positions);
+    rc.on_positions = [this, exchange = exchange](const std::vector<models::Position>& positions) {
+      portfolio_.update_positions(exchange, positions);
+      for (auto* l : listeners_) l->on_positions(exchange, positions);
     };
-    reconcilers_[venue] =
-        std::make_unique<Reconciler>(config_, exchange, it->second, &orders_, std::move(rc));
+    reconcilers_[exchange] =
+        std::make_unique<Reconciler>(config_, exchange_config, it->second, &orders_, std::move(rc));
   }
 }
 
@@ -66,7 +66,7 @@ void OmsService::poll() {
 }
 
 void OmsService::stop() {
-  // Reconcilers first: they borrow REST clients that VenueConnections is
+  // Reconcilers first: they borrow REST clients that ExchangeConnections is
   // about to tear down.
   reconcilers_.clear();
   if (writer_) {
@@ -83,12 +83,12 @@ const Reconciler* OmsService::reconciler(const std::string& exchange) const {
 
 // ---------------------------------------------------------------------------
 void OmsService::on_order_update(const std::string& exchange,
-                                 const transport::OrderUpdateMsg& venue_msg) {
-  // The venue echoes the client order id we sent, which the parser put in
+                                 const transport::OrderUpdateMsg& exchange_msg) {
+  // The exchange echoes the client order id we sent, which the parser put in
   // internal_order_id. Map it back to the request that produced it -- its real
   // internal id and, above all, its strategy -- before anything is published,
   // or the update goes to every strategy and to none in particular.
-  transport::OrderUpdateMsg msg = venue_msg;
+  transport::OrderUpdateMsg msg = exchange_msg;
   if (const auto sub = orders_.find_submission(exchange, msg.internal_order_id.view())) {
     static_cast<void>(msg.internal_order_id.assign(sub->internal_order_id));
     static_cast<void>(msg.strategy_id.assign(sub->strategy_id.value_or(std::string())));
@@ -107,10 +107,10 @@ void OmsService::on_order_update(const std::string& exchange,
   orders_.update_from_ws(std::move(order));
 }
 
-void OmsService::on_fill(const std::string& exchange, const transport::FillMsg& venue_msg) {
-  // A venue fill carries no strategy; the order it belongs to does. The order
+void OmsService::on_fill(const std::string& exchange, const transport::FillMsg& exchange_msg) {
+  // An exchange fill carries no strategy; the order it belongs to does. The order
   // update for it is always handled first (see the parsers), so it is known.
-  transport::FillMsg msg = venue_msg;
+  transport::FillMsg msg = exchange_msg;
   if (msg.strategy_id.empty()) {
     if (const auto order = orders_.get_order(std::string(msg.order_id.view()));
         order.has_value() && order->strategy_id.has_value()) {
@@ -133,12 +133,12 @@ void OmsService::on_fill(const std::string& exchange, const transport::FillMsg& 
   publish_fill(&msg, fill, /*recovered=*/false);
 }
 
-// A fill the venue had but the feed never delivered. Same idempotency check,
+// A fill the exchange had but the feed never delivered. Same idempotency check,
 // so a reconciler pass that re-reports a known trade does nothing.
-void OmsService::record_recovered_fill(const models::Fill& venue_fill) {
+void OmsService::record_recovered_fill(const models::Fill& exchange_fill) {
   // A REST fill carries no strategy either; attribute it like a feed fill, or
   // it would go out to every strategy instead of the one that traded.
-  models::Fill fill = venue_fill;
+  models::Fill fill = exchange_fill;
   if (!fill.strategy_id.has_value()) {
     if (const auto order = orders_.get_order(fill.order_id);
         order.has_value() && order->strategy_id.has_value()) {

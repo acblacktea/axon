@@ -80,8 +80,8 @@ struct OrderRequest {
     if (price.has_value() && price->raw() <= 0) {
       return "price must be positive";
     }
-    // internal_order_id is sent to the venue as its client order id (see
-    // venue_client_id), so it must be something all four accept: OKX's
+    // internal_order_id is sent to the exchange as its client order id (see
+    // exchange_client_id), so it must be something all four accept: OKX's
     // clOrdId is the strictest, 1-32 alphanumerics. The generated default is
     // a 32-character hex uuid, which always passes.
     if (internal_order_id.empty() || internal_order_id.size() > 32) {
@@ -97,15 +97,15 @@ struct OrderRequest {
     return std::nullopt;
   }
 
-  // The client order id the venue is given for this request -- the strategy's
+  // The client order id the exchange is given for this request -- the strategy's
   // label when it set one, otherwise internal_order_id.
   //
   // Sending one on EVERY order is what makes an order findable after a
-  // timeout: the venue echoes it on every update, so a reply that arrives
+  // timeout: the exchange echoes it on every update, so a reply that arrives
   // late, or a request whose outcome is unknown, can still be tied back to
-  // the request that produced it. It is also the venue-side idempotency key --
+  // the request that produced it. It is also the exchange-side idempotency key --
   // a resubmission carrying the same id is refused while the first is live.
-  std::string_view venue_client_id() const noexcept {
+  std::string_view exchange_client_id() const noexcept {
     if (label.has_value() && !label->empty()) {
       return *label;
     }

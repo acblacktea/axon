@@ -3,9 +3,11 @@
 #include <string>
 
 #include "axon/util/metrics.h"
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
-namespace axon::ems::okx {
+namespace axon::exchanges::okx {
+
+using namespace axon::ems;
 namespace {
 
 // OKX reports TWO outcomes per request: a top-level `code` for whether the
@@ -16,7 +18,7 @@ namespace {
 // code "0" with sCode "51008" (insufficient balance) is a perfectly normal
 // shape.
 std::optional<std::string> order_rejection(std::string_view payload,
-                                           venue::Document& doc) {
+                                           exchanges::Document& doc) {
   auto root = doc.parse_copy(payload);
   if (!root.has_value()) {
     return std::nullopt;
@@ -26,7 +28,7 @@ std::optional<std::string> order_rejection(std::string_view payload,
     return std::nullopt;
   }
   std::optional<std::string> rejection;
-  data->for_each_object([&](venue::Object& entry) {
+  data->for_each_object([&](exchanges::Object& entry) {
     if (rejection.has_value()) {
       return;
     }
@@ -66,10 +68,10 @@ std::size_t build_modify(char* buf, std::size_t cap,
 // Acceptance of the REQUEST is not acceptance of the ORDER, so a reply OKX
 // called successful still has to be inspected.
 OrderResult interpret_reply(std::string_view payload,
-                            const models::OrderRequest&, VenueState& state) {
+                            const models::OrderRequest&, ExchangeState& state) {
   if (const auto rejection = order_rejection(payload, state.reply_doc);
       rejection.has_value()) {
-    util::get_metrics().inc_order_rejected("okx", "venue");
+    util::get_metrics().inc_order_rejected("okx", "exchange");
     return OrderResult{false, std::nullopt, *rejection};
   }
   return OrderResult{true, std::nullopt, {}};
@@ -77,8 +79,8 @@ OrderResult interpret_reply(std::string_view payload,
 
 }  // namespace
 
-const VenueOps& ops() {
-  static const VenueOps kOps{
+const ExchangeOps& ems_ops() {
+  static const ExchangeOps kOps{
       "okx",
       /*own_trade_connection=*/false,  // orders ride the private stream
       /*needs_symbol=*/true,
@@ -87,4 +89,4 @@ const VenueOps& ops() {
   return kOps;
 }
 
-}  // namespace axon::ems::okx
+}  // namespace axon::exchanges::okx

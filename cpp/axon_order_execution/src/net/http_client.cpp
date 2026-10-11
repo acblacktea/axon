@@ -100,7 +100,7 @@ std::size_t parse_http_head(std::string_view data, int& status,
     if (iequals(header.name, "Content-Length")) {
       content_length = std::strtoll(header.value.c_str(), nullptr, 10);
     } else if (iequals(header.name, "Transfer-Encoding")) {
-      // Venues use chunked for larger snapshots, so this is not theoretical.
+      // Exchanges use chunked for larger snapshots, so this is not theoretical.
       chunked = header.value.find("chunked") != std::string::npos;
     } else if (iequals(header.name, "Connection")) {
       keep_alive = !iequals(header.value, "close");
@@ -202,7 +202,7 @@ struct Connection {
   std::string carry_over;
   std::uint64_t requests_served = 0;
   // Retired after this many, so a long-lived connection cannot accumulate
-  // whatever state a venue's load balancer decides to attach to it.
+  // whatever state an exchange's load balancer decides to attach to it.
   static constexpr std::uint64_t kMaxRequestsPerConnection = 1000;
 
   // Clears everything that belongs to ONE response, leaving the socket and TLS
@@ -323,7 +323,7 @@ std::string build_request_bytes(const HttpRequest& r) {
     out += h.value;
     out += "\r\n";
   }
-  // Explicit: a venue that defaults to close would cost a TLS handshake per
+  // Explicit: an exchange that defaults to close would cost a TLS handshake per
   // request, which is most of the latency of an order.
   out += "Connection: keep-alive\r\n";
   if (!r.body.empty()) {
@@ -603,7 +603,7 @@ std::size_t HttpClient::poll() {
         }
       } else {
         // No length and not chunked: the body ends when the connection does.
-        // Rare against these venues, but a 204 with no body lands here.
+        // Rare against these exchanges, but a 204 with no body lands here.
         complete = c.status == 204 || c.status == 304;
         decoded = c.body;
       }

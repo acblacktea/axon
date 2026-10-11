@@ -13,10 +13,10 @@
 #include <string_view>
 #include <vector>
 
-#include "axon/venue/json_view.h"
+#include "axon/exchanges/common/json_view.h"
 
 using namespace axon;
-using namespace axon::venue::deribit;
+using namespace axon::exchanges::deribit;
 using axon::models::OrderSide;
 using axon::models::OrderType;
 
@@ -40,8 +40,8 @@ models::OrderRequest limit_buy() {
 
 // Parse the built message back so the assertions are about structure, not
 // about byte layout that could change harmlessly.
-venue::Document& doc() {
-  static venue::Document d(8192);
+exchanges::Document& doc() {
+  static exchanges::Document d(8192);
   return d;
 }
 
@@ -110,7 +110,7 @@ TEST(DeribitBuilder, MarketOrderOmitsPrice) {
 // Every order carries a client id, so its updates can be tied back to the
 // request even when the placement reply is lost. Deribit's only client field
 // is `label`: the strategy's label when set, otherwise our internal_order_id.
-TEST(DeribitBuilder, LabelIsTheVenueClientId) {
+TEST(DeribitBuilder, LabelIsTheExchangeClientId) {
   DeribitBuilder b;
   char buf[kMaxRequestBytes];
   std::int64_t id = 0;
@@ -363,7 +363,7 @@ TEST(DeribitBuilder, EscapesControlCharacters) {
 
 TEST(DeribitBuilder, RefusesToTruncate) {
   // A truncated order message is far worse than no message: it would be
-  // rejected by the venue at best, and misparsed at worst.
+  // rejected by the exchange at best, and misparsed at worst.
   DeribitBuilder b;
   std::int64_t id = 0;
   for (std::size_t cap = 1; cap < 120; ++cap) {

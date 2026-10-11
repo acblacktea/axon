@@ -7,7 +7,7 @@
 // placement whose reply is lost still finds its way home.
 //
 // No network: the feed is driven by calling the sink directly, and the
-// reconcilers read a scripted VenueRest.
+// reconcilers read a scripted ExchangeRest.
 
 #include <gtest/gtest.h>
 
@@ -23,7 +23,7 @@
 #include "axon/oms/oms_service.h"
 #include "axon/risk/risk_feed.h"
 #include "axon/risk/risk_manager.h"
-#include "axon/oms/venue_connections.h"
+#include "axon/oms/exchange_connections.h"
 #include "axon/transport/hot_messages.h"
 
 namespace {
@@ -76,8 +76,8 @@ struct Recorder : axon::oms::OmsListener {
   }
 };
 
-// A VenueRest whose answers the test scripts.
-class ScriptedRest : public axon::oms::VenueRest {
+// A ExchangeRest whose answers the test scripts.
+class ScriptedRest : public axon::oms::ExchangeRest {
  public:
   std::vector<Order> open_orders;
   std::vector<Fill> trades;
@@ -128,7 +128,7 @@ OrderRequest request(const char* strategy = "alpha") {
 
 // An order update as the Binance parser emits it: the client order id we sent
 // in internal_order_id, no strategy.
-axon::transport::OrderUpdateMsg venue_update(const std::string& client_id,
+axon::transport::OrderUpdateMsg exchange_update(const std::string& client_id,
                                              OrderStatus status = OrderStatus::kOpen,
                                              const char* filled = "0", std::int64_t ms = 1000) {
   Order o;
@@ -160,7 +160,7 @@ Fill trade(const char* trade_id, const char* order_id = "V-1") {
   return f;
 }
 
-axon::transport::FillMsg venue_fill(const char* trade_id) {
+axon::transport::FillMsg exchange_fill(const char* trade_id) {
   axon::transport::FillMsg m{};
   EXPECT_TRUE(axon::transport::encode_fill(trade(trade_id), 2, m));
   return m;
@@ -188,19 +188,19 @@ TEST_F(OmsServiceTest, TheRawUpdateIsPublishedBeforeTheStoreChanges) {
   std::optional<Order> stored_at_publish = Order{};
   rec.on_message_hook = [&] { stored_at_publish = oms.get_order("V-1"); };
 
-  oms.on_order_update("binance", venue_update("abc"));
+  oms.on_order_update("binance", exchange_update("abc"));
 
   EXPECT_FALSE(stored_at_publish.has_value()) << "the store was updated before the hot path";
   EXPECT_EQ(rec.calls, (std::vector<std::string>{"message", "update", "changed"}));
   EXPECT_TRUE(oms.get_order("V-1").has_value());
 }
 
-// The venue echoes the client id we sent; the OMS maps it back to the request
+// The exchange echoes the client id we sent; the OMS maps it back to the request
 // so the update reaches the strategy that placed it -- on both paths.
 TEST_F(OmsServiceTest, AnUpdateIsRoutedToTheStrategyThatPlacedIt) {
   const auto req = request("alpha");
   oms.before_place("binance", req);
-  oms.on_order_update("binance", venue_update(req.internal_order_id));
+  oms.on_order_update("binance", exchange_update(req.internal_order_id));
 
   ASSERT_EQ(rec.messages.size(), 1u);
   EXPECT_EQ(rec.messages[0].strategy_id.view(), "alpha");
@@ -215,7 +215,7 @@ TEST_F(OmsServiceTest, AnUnknownOutcomeKeepsTheRouting) {
   const auto req = request("alpha");
   oms.before_place("binance", req);
   oms.after_place("binance", req, Outcome::kUnknown, std::nullopt);
-  oms.on_order_update("binance", venue_update(req.internal_order_id));
+  oms.on_order_update("binance", exchange_update(req.internal_order_id));
   EXPECT_EQ(rec.messages.at(0).strategy_id.view(), "alpha");
 }
 
@@ -223,7 +223,7 @@ TEST_F(OmsServiceTest, ARefusedPlacementForgetsTheRouting) {
   const auto req = request("alpha");
   oms.before_place("binance", req);
   oms.after_place("binance", req, Outcome::kRefused, std::nullopt);
-  oms.on_order_update("binance", venue_update(req.internal_order_id));
+  oms.on_order_update("binance", exchange_update(req.internal_order_id));
   EXPECT_TRUE(rec.messages.at(0).strategy_id.empty());
 }
 
@@ -243,8 +243,8 @@ TEST_F(OmsServiceTest, AnAcceptedPlacementRecordsTheOrder) {
 // An update that changes nothing the store tracks is still an update (the
 // risk layer needs it) but not a change (strategies do not).
 TEST_F(OmsServiceTest, ARepeatedUpdateIsNotAChange) {
-  oms.on_order_update("binance", venue_update("abc", OrderStatus::kOpen, "0", 1000));
-  oms.on_order_update("binance", venue_update("abc", OrderStatus::kOpen, "0", 1001));
+  oms.on_order_update("binance", exchange_update("abc", OrderStatus::kOpen, "0", 1000));
+  oms.on_order_update("binance", exchange_update("abc", OrderStatus::kOpen, "0", 1001));
   EXPECT_EQ(rec.changed.size(), 1u);
   EXPECT_EQ(rec.messages.size(), 2u);
 }
@@ -256,8 +256,8 @@ TEST_F(OmsServiceTest, ARepeatedUpdateIsNotAChange) {
 TEST_F(OmsServiceTest, AFillReachesTheStrategyOfItsOrder) {
   const auto req = request("alpha");
   oms.before_place("binance", req);
-  oms.on_order_update("binance", venue_update(req.internal_order_id));
-  oms.on_fill("binance", venue_fill("T1"));
+  oms.on_order_update("binance", exchange_update(req.internal_order_id));
+  oms.on_fill("binance", exchange_fill("T1"));
 
   ASSERT_EQ(rec.fills.size(), 1u);
   EXPECT_EQ(rec.fills[0].strategy_id.value_or(""), "alpha");
@@ -268,8 +268,8 @@ TEST_F(OmsServiceTest, AFillReachesTheStrategyOfItsOrder) {
 }
 
 TEST_F(OmsServiceTest, AFillIsDeliveredOnce) {
-  oms.on_fill("binance", venue_fill("T1"));
-  oms.on_fill("binance", venue_fill("T1"));
+  oms.on_fill("binance", exchange_fill("T1"));
+  oms.on_fill("binance", exchange_fill("T1"));
   EXPECT_EQ(rec.fills.size(), 1u);
   EXPECT_EQ(oms.fills_duplicate(), 1u);
 }
@@ -280,7 +280,7 @@ TEST_F(OmsServiceTest, AMissedFillIsRecoveredAndAttributed) {
   start_with_rest();
   const auto req = request("alpha");
   oms.before_place("binance", req);
-  oms.on_order_update("binance", venue_update(req.internal_order_id));
+  oms.on_order_update("binance", exchange_update(req.internal_order_id));
 
   rest.trades = {trade("T7")};
   oms.on_session_live("binance");
@@ -297,7 +297,7 @@ TEST_F(OmsServiceTest, AMissedFillIsRecoveredAndAttributed) {
 // strategy once.
 TEST_F(OmsServiceTest, AFeedFillIsNotRecoveredAgain) {
   start_with_rest();
-  oms.on_fill("binance", venue_fill("T1"));
+  oms.on_fill("binance", exchange_fill("T1"));
   rest.trades = {trade("T1")};
   oms.on_session_live("binance");
   oms.poll();
@@ -323,10 +323,10 @@ TEST_F(OmsServiceTest, SessionLiveReconcilesImmediately) {
 // published, so strategies and the risk layer both hear of it.
 TEST_F(OmsServiceTest, AReconciliationCorrectionIsPublished) {
   start_with_rest();
-  oms.on_order_update("binance", venue_update("abc"));
+  oms.on_order_update("binance", exchange_update("abc"));
   rec.changed.clear();
 
-  rest.open_orders = {};  // the venue no longer lists V-1: it closed unseen
+  rest.open_orders = {};  // the exchange no longer lists V-1: it closed unseen
   oms.on_session_live("binance");
   oms.poll();
 
@@ -360,7 +360,7 @@ TEST_F(OmsServiceTest, AccountUpdatesAreStored) {
   EXPECT_EQ(oms.account("binance", "USDT")->equity.raw(), a.equity.raw());
 }
 
-TEST_F(OmsServiceTest, AVenueWithoutRestHasNoReconciler) {
+TEST_F(OmsServiceTest, AExchangeWithoutRestHasNoReconciler) {
   oms.start({});
   EXPECT_EQ(oms.reconciler("binance"), nullptr);
   oms.on_session_live("binance");  // nothing to trigger; must not crash
@@ -371,7 +371,7 @@ TEST_F(OmsServiceTest, AVenueWithoutRestHasNoReconciler) {
 // The risk layer, fed through the same listener interface
 // ===========================================================================
 
-// An order the venue closed while the feed was down leaves the risk layer's
+// An order the exchange closed while the feed was down leaves the risk layer's
 // working-order book when reconciliation finds it -- not only on a feed update.
 TEST_F(OmsServiceTest, RiskHearsOfReconciliationCorrections) {
   axon::risk::RiskManager risk;
@@ -379,7 +379,7 @@ TEST_F(OmsServiceTest, RiskHearsOfReconciliationCorrections) {
   oms.add_listener(&feed);
   start_with_rest();
 
-  oms.on_order_update("binance", venue_update("abc"));
+  oms.on_order_update("binance", exchange_update("abc"));
   EXPECT_EQ(risk.working_order_count(), 1u);
 
   oms.on_session_live("binance");
@@ -391,7 +391,7 @@ TEST_F(OmsServiceTest, RiskTakesFillsAndPositions) {
   axon::risk::RiskManager risk;
   axon::risk::RiskFeed feed(risk, [] { return 1000.0; });
   oms.add_listener(&feed);
-  oms.on_fill("binance", venue_fill("T1"));
+  oms.on_fill("binance", exchange_fill("T1"));
   EXPECT_EQ(risk.position("binance", "BTCUSDT").raw(), Qty::from_string("0.01")->raw());
 
   feed.on_positions("binance", {});
@@ -415,10 +415,10 @@ TEST(RiskFeedTest, RecoveredFillsDoNotSetTheReferencePrice) {
 }
 
 // ===========================================================================
-// VenueConnections, without touching the network
+// ExchangeConnections, without touching the network
 // ===========================================================================
 
-struct NullSink : axon::oms::VenueEventSink {
+struct NullSink : axon::oms::ExchangeEventSink {
   void on_order_update(const std::string&, const axon::transport::OrderUpdateMsg&) override {}
   void on_fill(const std::string&, const axon::transport::FillMsg&) override {}
   void on_account(const std::string&, const axon::models::AccountSummary&) override {}
@@ -427,43 +427,43 @@ struct NullSink : axon::oms::VenueEventSink {
 
 // Starting only begins each connection; nothing reaches the network until
 // poll(), which this test never calls.
-TEST(VenueConnectionsTest, BuildsEachVenuesConnectionsAndSkipsUnknownOnes) {
+TEST(ExchangeConnectionsTest, BuildsEachExchangesConnectionsAndSkipsUnknownOnes) {
   Config c;
-  for (const char* name : {"binance", "bybit", "okx", "deribit", "nosuchvenue"}) {
+  for (const char* name : {"binance", "bybit", "okx", "deribit", "nosuchexchange"}) {
     axon::ExchangeConfig e;
     e.name = name;
     c.exchanges[name] = e;
   }
-  axon::oms::VenueConnections conns(c);
+  axon::oms::ExchangeConnections conns(c);
   NullSink sink;
   conns.start(sink, [](const std::string&, std::int64_t, bool, std::string_view,
                        std::string_view) {});
 
-  EXPECT_EQ(conns.venues(), (std::vector<std::string>{"binance", "bybit", "deribit", "okx"}));
-  for (const auto& v : conns.venues()) {
+  EXPECT_EQ(conns.exchanges(), (std::vector<std::string>{"binance", "bybit", "deribit", "okx"}));
+  for (const auto& v : conns.exchanges()) {
     EXPECT_NE(conns.session(v), nullptr) << v;
     EXPECT_NE(conns.rest(v), nullptr) << v;
   }
-  // Only the venues that need a second connection for order entry get one.
+  // Only the exchanges that need a second connection for order entry get one.
   EXPECT_NE(conns.trade_session("binance"), nullptr);
   EXPECT_NE(conns.trade_session("bybit"), nullptr);
   EXPECT_EQ(conns.trade_session("okx"), nullptr);
   EXPECT_EQ(conns.trade_session("deribit"), nullptr);
-  EXPECT_EQ(conns.session("nosuchvenue"), nullptr);
-  EXPECT_EQ(conns.rest("nosuchvenue"), nullptr);
+  EXPECT_EQ(conns.session("nosuchexchange"), nullptr);
+  EXPECT_EQ(conns.rest("nosuchexchange"), nullptr);
   EXPECT_EQ(conns.rests().size(), 4u);
 
   conns.stop();
-  EXPECT_TRUE(conns.venues().empty());
+  EXPECT_TRUE(conns.exchanges().empty());
   conns.stop();  // twice is fine
 }
 
 // A configured trust anchor that cannot be read must stop startup, not show up
 // later as every connection failing verification.
-TEST(VenueConnectionsTest, AnUnreadableExtraCaFileIsAStartupError) {
+TEST(ExchangeConnectionsTest, AnUnreadableExtraCaFileIsAStartupError) {
   Config c;
   c.runtime.extra_ca_file = "/nonexistent/corporate-root.pem";
-  EXPECT_THROW(axon::oms::VenueConnections conns(c), std::runtime_error);
+  EXPECT_THROW(axon::oms::ExchangeConnections conns(c), std::runtime_error);
 }
 
 }  // namespace

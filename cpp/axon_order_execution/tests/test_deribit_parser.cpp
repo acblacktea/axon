@@ -14,7 +14,7 @@
 #include <vector>
 
 using namespace axon;
-using namespace axon::venue::deribit;
+using namespace axon::exchanges::deribit;
 using axon::models::Liquidity;
 using axon::models::OrderSide;
 using axon::models::OrderStatus;
@@ -40,7 +40,7 @@ class Padded {
  public:
   explicit Padded(std::string_view json) : buf_(json) {
     len_ = json.size();
-    buf_.resize(len_ + venue::kJsonPadding, '\0');
+    buf_.resize(len_ + exchanges::kJsonPadding, '\0');
   }
   const char* data() const { return buf_.data(); }
   std::size_t len() const { return len_; }

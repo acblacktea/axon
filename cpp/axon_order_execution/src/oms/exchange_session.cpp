@@ -1,4 +1,4 @@
-#include "axon/oms/venue_session.h"
+#include "axon/oms/exchange_session.h"
 
 #include <cmath>
 #include <cstring>
@@ -9,7 +9,7 @@
 #include "axon/util/logging.h"
 #include "axon/util/metrics.h"
 #include "axon/oms/detail/session_util.h"
-#include "axon/oms/oms_venue.h"
+#include "axon/oms/oms_exchange.h"
 
 namespace axon::oms {
 namespace {
@@ -45,10 +45,10 @@ const char* to_string(SessionState s) noexcept {
 // ---------------------------------------------------------------------------
 // The adapter WsConnection::poll() calls into. WsConnection is a template on
 // the handler so nothing is virtual on the receive path; this keeps that
-// property while letting VenueSession stay a normal polymorphic class.
+// property while letting ExchangeSession stay a normal polymorphic class.
 // ---------------------------------------------------------------------------
-struct VenueSession::Bridge {
-  VenueSession* session = nullptr;
+struct ExchangeSession::Bridge {
+  ExchangeSession* session = nullptr;
 
   void on_open() {
     AXON_LOG_INFO(log(), "[{}] websocket open, authenticating",
@@ -65,12 +65,12 @@ struct VenueSession::Bridge {
     // The receive buffer reserves the JSON parser's padding, so the parser can
     // read straight out of it. `len + padding` is the capacity it may touch.
     if (!session->handle_frame(data, len, len + net::kJsonParserPadding)) {
-      session->fail_session("venue protocol error");
+      session->fail_session("exchange protocol error");
     }
   }
 
   void on_close(const net::WsCloseInfo& info) {
-    AXON_LOG_WARN(log(), "[{}] venue closed the connection: code={}",
+    AXON_LOG_WARN(log(), "[{}] exchange closed the connection: code={}",
                     session->exchange_.name,
                     static_cast<int>(info.code));
     session->enter_backoff();
@@ -85,10 +85,10 @@ struct VenueSession::Bridge {
 };
 
 // ---------------------------------------------------------------------------
-VenueSession::VenueSession(ExchangeConfig exchange, WebSocketConfig ws_config,
+ExchangeSession::ExchangeSession(ExchangeConfig exchange_config, WebSocketConfig ws_config,
                            RuntimeConfig runtime, const net::TlsContext* tls,
-                           VenueSessionHandlers handlers)
-    : exchange_(std::move(exchange)),
+                           ExchangeSessionHandlers handlers)
+    : exchange_(std::move(exchange_config)),
       ws_config_(ws_config),
       runtime_(runtime),
       handlers_(std::move(handlers)),
@@ -97,25 +97,25 @@ VenueSession::VenueSession(ExchangeConfig exchange, WebSocketConfig ws_config,
   bridge_->session = this;
 }
 
-VenueSession::~VenueSession() = default;
+ExchangeSession::~ExchangeSession() = default;
 
-double VenueSession::now_seconds() const { return monotonic_seconds(); }
+double ExchangeSession::now_seconds() const { return monotonic_seconds(); }
 
-void VenueSession::start() {
+void ExchangeSession::start() {
   started_ = true;
   backoff_attempt_ = 0;
   begin_connect();
 }
 
-void VenueSession::stop() {
+void ExchangeSession::stop() {
   started_ = false;
   connection_.abort();
   state_ = SessionState::kDisconnected;
   util::get_metrics().set_ws_connected(exchange_.name, false);
 }
 
-void VenueSession::begin_connect() {
-  // Some venues need a credential fetched before the URL is even known.
+void ExchangeSession::begin_connect() {
+  // Some exchanges need a credential fetched before the URL is even known.
   if (!prepare_connect()) {
     state_ = SessionState::kConnecting;
     arm_handshake_deadline();
@@ -139,7 +139,7 @@ void VenueSession::begin_connect() {
   connection_.connect(cfg, tls_);
 }
 
-void VenueSession::enter_backoff() {
+void ExchangeSession::enter_backoff() {
   if (!started_) {
     state_ = SessionState::kDisconnected;
     return;
@@ -164,12 +164,12 @@ void VenueSession::enter_backoff() {
                   exchange_.name, delay, backoff_attempt_);
 }
 
-void VenueSession::arm_handshake_deadline() {
+void ExchangeSession::arm_handshake_deadline() {
   handshake_deadline_ =
       now_seconds() + static_cast<double>(ws_config_.request_timeout_seconds);
 }
 
-void VenueSession::fail_session(std::string reason, bool fatal) {
+void ExchangeSession::fail_session(std::string reason, bool fatal) {
   last_error_ = std::move(reason);
   AXON_LOG_ERROR(log(), "[{}] session failed: {}", exchange_.name, last_error_);
   if (handlers_.on_error) {
@@ -177,7 +177,7 @@ void VenueSession::fail_session(std::string reason, bool fatal) {
   }
   if (fatal) {
     // Wrong credentials do not get better by retrying. Looping against a 401
-    // just burns the venue's rate limit and hides the real problem.
+    // just burns the exchange's rate limit and hides the real problem.
     connection_.abort();
     state_ = SessionState::kFatal;
     return;
@@ -185,7 +185,7 @@ void VenueSession::fail_session(std::string reason, bool fatal) {
   enter_backoff();
 }
 
-void VenueSession::note_authenticated() {
+void ExchangeSession::note_authenticated() {
   AXON_LOG_INFO(log(), "[{}] authenticated, subscribing", exchange_.name);
   state_ = SessionState::kSubscribing;
   arm_handshake_deadline();
@@ -194,7 +194,7 @@ void VenueSession::note_authenticated() {
   }
 }
 
-void VenueSession::note_subscribed() {
+void ExchangeSession::note_subscribed() {
   if (state_ == SessionState::kLive) {
     return;
   }
@@ -204,12 +204,12 @@ void VenueSession::note_subscribed() {
   util::get_metrics().set_ws_connected(exchange_.name, true);
   if (handlers_.on_live) {
     // Anything that happened while we were away was missed; a consumer caching
-    // venue state must invalidate here rather than trust what it has.
+    // exchange state must invalidate here rather than trust what it has.
     handlers_.on_live();
   }
 }
 
-void VenueSession::on_auth_reply(bool success, const std::string& error) {
+void ExchangeSession::on_auth_reply(bool success, const std::string& error) {
   if (!success) {
     // Treated as fatal: an authentication rejection is a credential problem,
     // and retrying it forever is worse than stopping.
@@ -219,7 +219,7 @@ void VenueSession::on_auth_reply(bool success, const std::string& error) {
   note_authenticated();
 }
 
-void VenueSession::on_subscribe_reply(bool success, const std::string& error) {
+void ExchangeSession::on_subscribe_reply(bool success, const std::string& error) {
   if (!success) {
     fail_session("subscription rejected: " + error);
     return;
@@ -227,14 +227,14 @@ void VenueSession::on_subscribe_reply(bool success, const std::string& error) {
   note_subscribed();
 }
 
-bool VenueSession::send_raw(std::string_view payload) {
+bool ExchangeSession::send_raw(std::string_view payload) {
   if (!connection_.open()) {
     return false;
   }
   return connection_.send_text(payload);
 }
 
-void VenueSession::poll() {
+void ExchangeSession::poll() {
   if (!started_ || state_ == SessionState::kFatal) {
     return;
   }
@@ -268,8 +268,8 @@ void VenueSession::poll() {
   // A handshake stage that never completes. The Python retries the individual
   // auth/subscribe RPC up to max_request_retries times; this drops the whole
   // connection and reconnects instead, which recovers from the case a retry
-  // cannot -- a socket the venue has silently stopped serving. The backoff it
-  // enters is the same exponential-with-jitter, so the venue sees the same
+  // cannot -- a socket the exchange has silently stopped serving. The backoff it
+  // enters is the same exponential-with-jitter, so the exchange sees the same
   // request rate either way.
   if (state_ == SessionState::kConnecting ||
       state_ == SessionState::kAuthenticating ||
@@ -299,30 +299,32 @@ void VenueSession::poll() {
   }
 }
 // ---------------------------------------------------------------------------
-// Each venue's sessions live in exchanges/<venue>/<venue>_oms.cpp; these look the
-// venue up and ask it.
+// Each exchange's sessions live in exchanges/<exchange>/<exchange>_oms.cpp; these look the
+// exchange up and ask it.
 // ---------------------------------------------------------------------------
-std::unique_ptr<VenueSession> make_trade_session(
-    const ExchangeConfig& exchange, const WebSocketConfig& ws_config,
+std::unique_ptr<ExchangeSession> make_trade_session(
+    const ExchangeConfig& exchange_config, const WebSocketConfig& ws_config,
     const RuntimeConfig& runtime, const net::TlsContext* tls,
-    VenueSessionHandlers handlers) {
-  const OmsVenue* venue = oms_venue_for(exchange.name);
-  if (venue == nullptr || venue->make_trade_session == nullptr) {
+    ExchangeSessionHandlers handlers) {
+  const OmsExchange* exchange = oms_exchange_for(exchange_config.name);
+  if (exchange == nullptr || exchange->make_trade_session == nullptr) {
     // OKX and Deribit send orders on the feed session; nothing to build.
     return nullptr;
   }
-  return venue->make_trade_session(exchange, ws_config, runtime, tls, std::move(handlers));
+  return exchange->make_trade_session(exchange_config, ws_config, runtime, tls,
+                                      std::move(handlers));
 }
 
-std::unique_ptr<VenueSession> make_venue_session(
-    const ExchangeConfig& exchange, const WebSocketConfig& ws_config,
-    const RuntimeConfig& runtime, const net::TlsContext* tls, VenueRest* rest,
-    VenueSessionHandlers handlers) {
-  const OmsVenue* venue = oms_venue_for(exchange.name);
-  if (venue == nullptr) {
+std::unique_ptr<ExchangeSession> make_exchange_session(
+    const ExchangeConfig& exchange_config, const WebSocketConfig& ws_config,
+    const RuntimeConfig& runtime, const net::TlsContext* tls, ExchangeRest* rest,
+    ExchangeSessionHandlers handlers) {
+  const OmsExchange* exchange = oms_exchange_for(exchange_config.name);
+  if (exchange == nullptr) {
     return nullptr;
   }
-  return venue->make_session(exchange, ws_config, runtime, tls, rest, std::move(handlers));
+  return exchange->make_session(exchange_config, ws_config, runtime, tls, rest,
+                                std::move(handlers));
 }
 
 }  // namespace axon::oms

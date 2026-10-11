@@ -47,7 +47,7 @@ struct Command {
 };
 
 // Leads the error of a failed response whose order may nonetheless be LIVE at
-// the venue -- the request went out and no verdict came back. A strategy must
+// the exchange -- the request went out and no verdict came back. A strategy must
 // not resubmit on seeing it; it confirms the order's state first, by its
 // internal_order_id. Carried in the error text rather than a new field so the
 // wire format stays identical to the Python implementation's.

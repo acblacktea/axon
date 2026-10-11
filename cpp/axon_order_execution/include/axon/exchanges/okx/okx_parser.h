@@ -33,10 +33,10 @@
 #include "axon/core/timestamp.h"
 #include "axon/models/portfolio.h"
 #include "axon/transport/hot_messages.h"
-#include "axon/venue/json_view.h"
-#include "axon/venue/venue_events.h"
+#include "axon/exchanges/common/json_view.h"
+#include "axon/exchanges/common/exchange_events.h"
 
-namespace axon::venue::okx {
+namespace axon::exchanges::okx {
 
 inline constexpr std::string_view kExchangeName = "okx";
 
@@ -46,8 +46,8 @@ inline constexpr std::string_view kTestnetUrl =
 inline constexpr std::string_view kProductionHost = "ws.okx.com";
 inline constexpr std::string_view kTestnetHost = "wspap.okx.com";
 
-using MessageKind = VenueMessageKind;
-using ParseResult = VenueParseResult;
+using MessageKind = ExchangeMessageKind;
+using ParseResult = ExchangeParseResult;
 
 // OKX's liveness exchange is plain text, not JSON. Check this before parsing.
 constexpr bool is_plain_text_heartbeat(std::string_view frame) noexcept {
@@ -308,7 +308,7 @@ class OkxParser {
 
     // OKX reports a fee paid as NEGATIVE. Normalise to "cost", matching abs()
     // in the Python -- otherwise fee accounting flips sign against the other
-    // three venues.
+    // three exchanges.
     const auto fee = d["fee"].as_decimal();
     out.fee_raw = fee.has_value() ? fee->abs().raw() : 0;
 
@@ -357,4 +357,4 @@ class OkxParser {
   std::uint64_t seq_ = 0;
 };
 
-}  // namespace axon::venue::okx
+}  // namespace axon::exchanges::okx

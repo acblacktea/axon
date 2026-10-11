@@ -32,10 +32,10 @@
 //
 // on_message hands out a pointer INTO the receive buffer. It is valid for the
 // duration of the call and no longer -- copy what you need before returning.
-// That is the whole point: a venue parser reads its six fields straight out of
+// That is the whole point: an exchange parser reads its six fields straight out of
 // the socket buffer with nothing copied in between.
 //
-// Ping/pong is handled internally. A venue that does not get its pong closes
+// Ping/pong is handled internally. An exchange that does not get its pong closes
 // the connection, and making that the application's problem is how it gets
 // forgotten.
 
@@ -76,13 +76,13 @@ struct WsConnectionConfig {
   std::string target = "/";
   bool use_tls = true;
 
-  // Extra HTTP headers on the upgrade request. Where a venue's auth token goes.
+  // Extra HTTP headers on the upgrade request. Where an exchange's auth token goes.
   std::vector<std::pair<std::string, std::string>> extra_headers;
 
-  // Receive buffer. Must comfortably exceed the largest frame the venue sends;
+  // Receive buffer. Must comfortably exceed the largest frame the exchange sends;
   // ensure_writable() fails rather than truncating, which fails the connection.
   //
-  // Reserves simdjson's padding on top, so a venue parser can work straight out
+  // Reserves simdjson's padding on top, so an exchange parser can work straight out
   // of this buffer.
   std::size_t rx_buffer_bytes = 1u << 18;  // 256 KiB
   std::size_t tx_buffer_bytes = 1u << 16;  // 64 KiB
@@ -100,7 +100,7 @@ struct WsConnectionStats {
   std::uint64_t bytes_sent = 0;
   std::uint64_t pings_received = 0;
   std::uint64_t pongs_sent = 0;
-  // Non-zero means the send buffer filled: the venue or the network is not
+  // Non-zero means the send buffer filled: the exchange or the network is not
   // keeping up and orders are being delayed.
   std::uint64_t send_backpressure_events = 0;
   // Non-zero means the receive buffer had to memmove. Steady growth means it
@@ -216,7 +216,7 @@ bool WsConnection::drive_ws_handshake(Handler& handler) {
       return false;
 
     case WsHandshakeStatus::kOk:
-      // Consume EXACTLY the headers. A venue may put its first frame in the
+      // Consume EXACTLY the headers. An exchange may put its first frame in the
       // same segment, and eating it here would lose the message.
       rx_.consume(result.consumed);
       state_ = WsConnectionState::kOpen;
@@ -287,7 +287,7 @@ bool WsConnection::drive_open(Handler& handler) {
       case WsEvent::kPing: {
         ++stats_.pings_received;
         // Answer immediately and with the same payload, as the RFC requires.
-        // A venue that does not get its pong closes the connection, so this is
+        // An exchange that does not get its pong closes the connection, so this is
         // never the application's business.
         queue_frame(WsOpcode::kPong, event.payload, event.payload_size);
         ++stats_.pongs_sent;

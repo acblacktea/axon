@@ -8,7 +8,7 @@
 // PRECISION CONTRACT -- important, and the reason this type is not just an
 // int64 typedef:
 //
-//   exchange feeds  -> milliseconds  (all four venues we support)
+//   exchange feeds  -> milliseconds  (all four exchanges we support)
 //   JSON wire       -> microseconds  (Python datetime tops out there)
 //   binary hot path -> nanoseconds   (full resolution preserved)
 //
