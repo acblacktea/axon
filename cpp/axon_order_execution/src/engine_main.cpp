@@ -24,6 +24,8 @@
 #include <map>
 #include <vector>
 
+#include <fmt/format.h>
+
 #include "axon/config.h"
 #include "axon/core/clock.h"
 #include "axon/core/platform.h"
@@ -209,6 +211,7 @@ class Engine {
   // --- risk ----------------------------------------------------------------
   void start_risk() {
     risk_ = axon::risk::RiskManager(config_.risk);
+    risk_.start_pnl_session(axon::core::wall_clock_ns() / 1'000'000LL);
     ems_->set_risk_manager(&risk_);
     if (config_.risk.cancel_all_on_kill) {
       risk_.set_on_kill_engaged([this](const std::string&) { cancel_all_working_orders(); });
@@ -225,6 +228,14 @@ class Engine {
       AXON_LOG_INFO(log_, "pre-trade risk: {} instrument override(s), {} orders/s/strategy",
                     config_.risk.instruments.size(),
                     config_.risk.max_orders_per_strategy_per_second);
+    }
+    if (config_.risk.max_loss.has_value()) {
+      AXON_LOG_INFO(log_, "loss limit: kill switch below PnL -{:.2f} (from now, and from "
+                          "00:00 UTC each day)",
+                    *config_.risk.max_loss);
+    } else {
+      AXON_LOG_WARN(log_, "no loss limit (cpp.risk.max_loss): a losing strategy is stopped "
+                          "only by hand");
     }
   }
 
@@ -263,6 +274,16 @@ class Engine {
     if (risk_.reference_refresh_due(now)) {
       refresh_reference_prices();
     }
+
+    risk_.on_wall_clock(axon::core::wall_clock_ns() / 1'000'000LL);
+    // The private feed is how fills are heard. Order entry has its own
+    // connection on some exchanges, and the EMS already refuses when that
+    // one is down.
+    for (const auto& exchange : connections_->exchanges()) {
+      const auto* feed = connections_->session(exchange);
+      risk_.observe_exchange_link(exchange, feed != nullptr && feed->live(), now);
+    }
+    risk_.check_loss(now);
   }
 
   // Wired to RiskManager::set_on_kill_engaged: stopping new orders is not
@@ -308,6 +329,18 @@ class Engine {
                   oms_->cached_order_count(), oms_->fills_accepted(), oms_->fills_duplicate(),
                   zmq_.commands_handled(), zmq_.events_published(),
                   connections_->state_summary());
+    {
+      const auto p = risk_.pnl(seconds());
+      std::string usage;
+      for (const auto& exchange : connections_->exchanges()) {
+        usage += fmt::format(" {}={:.0f}%", exchange,
+                             ems_->rate_limit_utilisation(exchange) * 100.0);
+      }
+      AXON_LOG_INFO(log_, "risk: PnL {:.2f}{}, rate limit used:{}{}", p.total,
+                    p.unvalued > 0 ? fmt::format(" ({} position(s) unvalued)", p.unvalued)
+                                   : std::string(),
+                    usage, risk_.kill_switch_engaged() ? ", KILL SWITCH ENGAGED" : "");
+    }
     if (shm_.active()) {
       const auto hot = shm_.stats();
       AXON_LOG_INFO(log_, "hot path: {} commands, {} events ({} dropped)",

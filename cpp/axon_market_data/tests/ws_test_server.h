@@ -85,7 +85,10 @@ public:
 
     unsigned short port() const { return port_; }
 
-    // TCP connections accepted, and WebSocket handshakes completed.
+    // TCP connections accepted, and WebSocket handshakes completed. Counted
+    // on the server thread once its side of the handshake resumes, which can
+    // be after the client already sees the connection up: wait for these with
+    // run_until rather than reading them straight after a client-side event.
     int accepted() const { return accepted_; }
     int handshakes() const { return handshakes_; }
     int open_connections() const { return open_; }

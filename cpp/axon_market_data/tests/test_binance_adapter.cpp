@@ -242,12 +242,12 @@ TEST_F(BinanceTest, EmptyFrameIsCountedAsAParseError) {
     EXPECT_EQ(metric("axon_mds_parse_error_total", {{"exchange", "binance_spot"}}), 1.0);
 }
 
-// BUG: simdjson On-Demand's iterate() only rejects an empty document or an
+// simdjson On-Demand's iterate() only rejects an empty document or an
 // unterminated string; any other truncated or garbled frame "parses" and fails
-// later, at the first field lookup -- which the handler reads as "field absent"
-// and silently drops. So axon_mds_parse_error_total misses most malformed
-// input, on every venue, and a feed sending garbage looks like a quiet one.
-TEST_F(BinanceTest, DISABLED_MalformedJsonIsCountedAsAParseError) {
+// later, at the first field lookup. Reading that error as "field absent" used
+// to drop such frames silently, so a feed sending garbage looked like a quiet
+// one. Every frame that fails to parse must be counted, on every venue.
+TEST_F(BinanceTest, MalformedJsonIsCountedAsAParseError) {
     auto a = make(MarketType::Spot, {}, {"ETH_USDT_SPOT"});
     A::feed(*a, "{not json");
     A::feed(*a, R"({"u":1,"s":"ETHUSDT","b":"1")");  // truncated mid-object
@@ -268,12 +268,12 @@ TEST_F(BinanceTest, UndeclaredSymbolIsCountedWithoutItsOwnSeries) {
     EXPECT_FALSE(metric("axon_mds_events_total", {{"symbol", "DOGEUSDT"}}).has_value());
 }
 
-// BUG: a frame that is valid JSON but missing a field the handler reads throws
-// a simdjson_error out of handle_message. In production that propagates out
-// of the WebSocket read loop and is treated as a connection failure: one odd
-// frame tears down the socket and every topic on it, then reconnects. It
-// should be counted as a parse error and dropped, like invalid JSON is.
-TEST_F(BinanceTest, DISABLED_FrameMissingAFieldIsDroppedNotThrown) {
+// A frame that is valid JSON but missing a field the handler reads used to
+// throw a simdjson_error out of handle_message, then out of the WebSocket read
+// loop, where it was treated as a connection failure: one odd frame tore down
+// the socket and every topic on it. It is counted as a parse error and
+// dropped, like invalid JSON.
+TEST_F(BinanceTest, FrameMissingAFieldIsDroppedNotThrown) {
     auto a = make(MarketType::Spot, {"ETH_USDT_SPOT"}, {"ETH_USDT_SPOT"});
     EXPECT_NO_THROW(A::feed(*a, R"({"e":"depthUpdate","s":"ETHUSDT"})"));
     EXPECT_NO_THROW(A::feed(*a, R"({"u":1,"s":"ETHUSDT","b":"not-a-number","B":"1","a":"2","A":"1"})"));
@@ -544,12 +544,11 @@ TEST_F(BinanceTest, ErrorBodyFromTheVenueCountsAsAFailedSnapshot) {
                      {{"exchange", "binance_usdt_futures"}}), 1.0);
 }
 
-// BUG: when the snapshot request fails, the symbol leaves the syncing set
-// while it waits a second to retry. Live diffs arriving in that window are
-// applied to an empty book -- no snapshot, no sequence check -- and published
-// as a real orderbook. The replay-failure path keeps the symbol syncing for
-// exactly this reason; the request-failure path should too.
-TEST_F(BinanceTest, DISABLED_NoBookIsPublishedBetweenAFailedSnapshotAndItsRetry) {
+// When the snapshot request fails the symbol must stay syncing while it waits
+// a second to retry. It used to leave the syncing set, so live diffs arriving
+// in that window were applied to an empty book -- no snapshot, no sequence
+// check -- and published as a real orderbook.
+TEST_F(BinanceTest, NoBookIsPublishedBetweenAFailedSnapshotAndItsRetry) {
     auto a = make(MarketType::Spot, {"ETH_USDT_SPOT"});
     A::schedule_sync(*a, "ETHUSDT");  // fails
     drain(ioc);

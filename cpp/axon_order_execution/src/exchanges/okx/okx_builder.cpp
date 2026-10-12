@@ -110,7 +110,7 @@ std::size_t OkxBuilder::ws_unsubscribe(char* out, std::size_t cap,
 
 // ---------------------------------------------------------------------------
 std::size_t OkxBuilder::place_order_body(
-    char* out, std::size_t cap, const models::OrderRequest& req) noexcept {
+    char* out, std::size_t cap, const models::OrderRequest& req) const noexcept {
   Writer w(out, cap);
   w.raw(R"({"instId":)");
   w.json_string(req.instrument);
@@ -145,6 +145,25 @@ std::size_t OkxBuilder::place_order_body(
   // OrderRequest::exchange_client_id.
   w.raw(R"(,"clOrdId":)");
   w.json_string(req.exchange_client_id());
+
+  // Self-trade prevention, or nothing to leave the account's default.
+  if (stp_ != models::SelfTradePrevention::kExchangeDefault) {
+    w.raw(R"(,"stpMode":")");
+    switch (stp_) {
+    case models::SelfTradePrevention::kCancelTaker:
+      w.raw("cancel_taker");
+      break;
+    case models::SelfTradePrevention::kCancelMaker:
+      w.raw("cancel_maker");
+      break;
+    case models::SelfTradePrevention::kCancelBoth:
+      w.raw("cancel_both");
+      break;
+    case models::SelfTradePrevention::kExchangeDefault:
+      break;
+    }
+    w.raw("\"");
+  }
 
   w.raw("}");
   return w.written(out);

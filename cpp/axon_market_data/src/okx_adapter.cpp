@@ -202,37 +202,33 @@ net::awaitable<void> OkxAdapter::resubscribe_book(std::string inst_id) {
 void OkxAdapter::handle_message(std::string_view raw) {
     if (raw == "pong") return;
 
-    simdjson::padded_string padded(raw);
-    auto doc_result = json_parser_.iterate(padded);
-    if (doc_result.error()) {
-        get_metrics().inc_parse_error(exchange_name_);
-        logger_->warn("[{}] JSON parse error", exchange_name_);
-        return;
-    }
-    auto doc = std::move(doc_result).value();
+    handle_frame([&] {
+        simdjson::padded_string padded(raw);
+        auto doc = json_parser_.iterate(padded).value();
 
-    // Control frames: {"event":"subscribe"|"unsubscribe"|"error", ...}
-    auto event_field = doc["event"];
-    if (!event_field.error()) {
-        auto event = event_field.get_string().value();
-        if (event == "error") {
-            auto msg = doc["msg"];
-            logger_->error("[{}] subscription error: {}", exchange_name_,
-                           msg.error() ? "unknown" : msg.get_string().value());
+        // Control frames: {"event":"subscribe"|"unsubscribe"|"error", ...}
+        auto event_field = doc["event"];
+        if (has_field(event_field)) {
+            auto event = event_field.get_string().value();
+            if (event == "error") {
+                auto msg = doc["msg"];
+                logger_->error("[{}] subscription error: {}", exchange_name_,
+                               has_field(msg) ? msg.get_string().value() : "unknown");
+            }
+            return;
         }
-        return;
-    }
 
-    auto arg = doc["arg"];
-    if (arg.error()) return;
+        auto arg = doc["arg"];
+        if (!has_field(arg)) return;
 
-    std::string channel(arg["channel"].get_string().value());
-    std::string inst_id(arg["instId"].get_string().value());
+        std::string channel(arg["channel"].get_string().value());
+        std::string inst_id(arg["instId"].get_string().value());
 
-    if (channel == "books")         handle_books(doc, inst_id, false);
-    else if (channel == "books5")   handle_books(doc, inst_id, true);
-    else if (channel == "bbo-tbt")  handle_bbo(doc, inst_id);
-    else if (channel.starts_with("candle")) handle_candle(doc, inst_id);
+        if (channel == "books")         handle_books(doc, inst_id, false);
+        else if (channel == "books5")   handle_books(doc, inst_id, true);
+        else if (channel == "bbo-tbt")  handle_bbo(doc, inst_id);
+        else if (channel.starts_with("candle")) handle_candle(doc, inst_id);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -271,12 +267,12 @@ void OkxAdapter::handle_books(simdjson::ondemand::document& doc,
     std::string action = "snapshot";
     if (!snapshot_only) {
         auto action_field = doc["action"];
-        if (action_field.error()) return;
+        if (!has_field(action_field)) return;
         action = std::string(action_field.get_string().value());
     }
 
     auto data = doc["data"].get_array();
-    if (data.error()) return;
+    if (!has_field(data)) return;
 
     for (auto entry : data.value()) {
         auto obj = entry.get_object().value();
@@ -303,7 +299,7 @@ void OkxAdapter::handle_books(simdjson::ondemand::document& doc,
 
         auto checksum_field = snapshot_only ? simdjson::simdjson_result<simdjson::ondemand::value>{simdjson::NO_SUCH_FIELD}
                                             : obj["checksum"];
-        if (!checksum_field.error() &&
+        if (has_field(checksum_field) &&
             checksum_field.type() == simdjson::ondemand::json_type::number) {
             checksum = checksum_field.get_int64().value();
             // OKX leaves this at 0 when it does not compute a checksum.
@@ -311,9 +307,9 @@ void OkxAdapter::handle_books(simdjson::ondemand::document& doc,
         }
         auto prev_field = snapshot_only ? simdjson::simdjson_result<simdjson::ondemand::value>{simdjson::NO_SUCH_FIELD}
                                         : obj["prevSeqId"];
-        if (!prev_field.error()) prev_seq_id = prev_field.get_int64().value();
+        if (has_field(prev_field)) prev_seq_id = prev_field.get_int64().value();
         auto seq_field = obj["seqId"];
-        if (!seq_field.error()) seq_id = seq_field.get_int64().value();
+        if (has_field(seq_field)) seq_id = seq_field.get_int64().value();
 
         if (action == "snapshot") {
             fresh.symbol          = to_unified_symbol(inst_id);
@@ -406,7 +402,7 @@ bool OkxAdapter::verify_checksum(const Orderbook& book, int64_t expected) const 
 void OkxAdapter::handle_bbo(simdjson::ondemand::document& doc,
                             const std::string& inst_id) {
     auto data = doc["data"].get_array();
-    if (data.error()) return;
+    if (!has_field(data)) return;
 
     for (auto entry : data.value()) {
         auto obj = entry.get_object().value();
@@ -446,7 +442,7 @@ void OkxAdapter::handle_bbo(simdjson::ondemand::document& doc,
 void OkxAdapter::handle_candle(simdjson::ondemand::document& doc,
                                const std::string& inst_id) {
     auto data = doc["data"].get_array();
-    if (data.error()) return;
+    if (!has_field(data)) return;
 
     // Each entry: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
     for (auto entry : data.value()) {

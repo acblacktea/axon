@@ -82,6 +82,32 @@ Config load_config(const std::string& path) {
       ex.api_key = get_or<std::string>(data, "api_key", "");
       ex.api_secret = get_or<std::string>(data, "api_secret", "");
       ex.passphrase = get_or<std::string>(data, "passphrase", "");
+      const auto stp = get_or<std::string>(data, "self_trade_prevention", "cancel_taker");
+      if (stp == "cancel_taker") {
+        ex.self_trade_prevention = models::SelfTradePrevention::kCancelTaker;
+      } else if (stp == "cancel_maker") {
+        ex.self_trade_prevention = models::SelfTradePrevention::kCancelMaker;
+      } else if (stp == "cancel_both") {
+        ex.self_trade_prevention = models::SelfTradePrevention::kCancelBoth;
+      } else if (stp == "exchange_default") {
+        ex.self_trade_prevention = models::SelfTradePrevention::kExchangeDefault;
+      } else {
+        throw std::runtime_error("exchanges." + name + ".self_trade_prevention must be "
+                                 "cancel_taker, cancel_maker, cancel_both or "
+                                 "exchange_default, not '" + stp + "'");
+      }
+      if (const YAML::Node limits = data["rate_limits"]; limits && limits.IsSequence()) {
+        for (const auto& l : limits) {
+          RateLimitRule rule;
+          rule.window_seconds = get_or(l, "window_seconds", 1.0);
+          rule.limit = get_or(l, "limit", 0);
+          if (rule.window_seconds <= 0.0 || rule.limit <= 0) {
+            throw std::runtime_error("exchanges." + name +
+                                     ".rate_limits: window_seconds and limit must be positive");
+          }
+          ex.rate_limits.push_back(rule);
+        }
+      }
       config.exchanges.emplace(name, std::move(ex));
     }
   }
@@ -89,6 +115,8 @@ Config load_config(const std::string& path) {
   const YAML::Node rec = root["reconciliation"];
   config.reconciliation.enabled = get_or(rec, "enabled", true);
   config.reconciliation.interval_seconds = get_or(rec, "interval_seconds", 30);
+  config.reconciliation.after_live_settle_seconds =
+      get_or(rec, "after_live_settle_seconds", 3.0);
 
   const YAML::Node frec = root["fill_reconciliation"];
   config.fill_reconciliation.enabled = get_or(frec, "enabled", true);
@@ -181,6 +209,20 @@ Config load_config(const std::string& path) {
   config.risk.reference_refresh_seconds = get_or(risk, "reference_refresh_seconds", 5);
   config.risk.kill_switch_file = get_or<std::string>(risk, "kill_switch_file", "");
   config.risk.cancel_all_on_kill = get_or(risk, "cancel_all_on_kill", true);
+  if (risk && risk["max_loss"] && !risk["max_loss"].IsNull()) {
+    config.risk.max_loss = risk["max_loss"].as<double>();
+    if (*config.risk.max_loss <= 0.0) {
+      throw std::runtime_error("cpp.risk.max_loss must be positive: it is the loss, not the PnL");
+    }
+  }
+  if (risk && risk["pnl_exclude_exchanges"] && risk["pnl_exclude_exchanges"].IsSequence()) {
+    config.risk.pnl_exclude_exchanges.clear();
+    for (const auto& e : risk["pnl_exclude_exchanges"]) {
+      config.risk.pnl_exclude_exchanges.push_back(e.as<std::string>());
+    }
+  }
+  config.risk.self_trade_prevention = get_or(risk, "self_trade_prevention", true);
+  config.risk.exchange_down_halt_seconds = get_or(risk, "exchange_down_halt_seconds", 5.0);
 
   return config;
 }

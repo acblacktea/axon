@@ -35,6 +35,9 @@ class RiskFeed final : public oms::OmsListener {
     if (!recovered) {
       risk_.update_reference_price(fill.exchange, fill.instrument, fill.price, clock_());
     }
+    // A fill is when a loss is realised: check now rather than on the next
+    // once-a-second tick.
+    risk_.check_loss(clock_());
   }
 
   void on_positions(const std::string& exchange,

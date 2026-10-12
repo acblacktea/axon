@@ -52,7 +52,7 @@ cmake --build build -j$(nproc)
 ctest --test-dir build -j$(nproc)
 ```
 
-产物：`build/axon_market_data`、`build/mds_subscriber`、`build/tests/mds_tests`
+产物：`build/axon_market_data`、`build/mds_subscriber`、`build/mds_shm_subscriber`、`build/mds_transport_bench`（共享内存 vs ZMQ 的单跳延迟）、`build/tests/mds_tests`
 
 ## 4. 当前的编译参数，以及还能怎么往上开
 

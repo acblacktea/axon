@@ -31,6 +31,7 @@ add_library(axon_market_data_core STATIC
     src/bybit_adapter.cpp
     src/hyperliquid_adapter.cpp
     src/zmq_publisher.cpp
+    src/shm_publisher.cpp
     src/service.cpp
 )
 
@@ -57,6 +58,15 @@ if(AXON_MDS_BUILD_TESTS)
 endif()
 
 # --- Examples ---
+# The shared-memory reader: header-only, so it links nothing of the service --
+# which is the point, a strategy should not have to either.
+add_executable(mds_shm_subscriber example/shm_subscriber.cpp)
+target_include_directories(mds_shm_subscriber PRIVATE include)
+
+# Same-host latency, shared memory against ZMQ.
+add_executable(mds_transport_bench bench/transport_bench.cpp)
+target_link_libraries(mds_transport_bench PRIVATE axon_market_data_core)
+
 add_executable(mds_subscriber example/subscriber.cpp)
 target_link_libraries(mds_subscriber PRIVATE
     cppzmq

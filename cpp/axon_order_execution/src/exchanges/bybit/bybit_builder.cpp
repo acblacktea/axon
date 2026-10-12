@@ -113,7 +113,7 @@ std::size_t BybitBuilder::ws_ping(char* out, std::size_t cap) noexcept {
 
 // ---------------------------------------------------------------------------
 std::size_t BybitBuilder::place_order_body(
-    char* out, std::size_t cap, const models::OrderRequest& req) noexcept {
+    char* out, std::size_t cap, const models::OrderRequest& req) const noexcept {
   Writer w(out, cap);
   w.raw(R"({"category":")");
   w.raw(kCategory);
@@ -157,6 +157,25 @@ std::size_t BybitBuilder::place_order_body(
   // OrderRequest::exchange_client_id.
   w.raw(R"(,"orderLinkId":)");
   w.json_string(req.exchange_client_id());
+
+  // Self-trade prevention, or nothing to leave the account's default.
+  if (stp_ != models::SelfTradePrevention::kExchangeDefault) {
+    w.raw(R"(,"smpType":")");
+    switch (stp_) {
+    case models::SelfTradePrevention::kCancelTaker:
+      w.raw("CancelTaker");
+      break;
+    case models::SelfTradePrevention::kCancelMaker:
+      w.raw("CancelMaker");
+      break;
+    case models::SelfTradePrevention::kCancelBoth:
+      w.raw("CancelBoth");
+      break;
+    case models::SelfTradePrevention::kExchangeDefault:
+      break;
+    }
+    w.raw("\"");
+  }
 
   w.raw("}");
   return w.written(out);

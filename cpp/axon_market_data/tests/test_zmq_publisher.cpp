@@ -153,13 +153,12 @@ TEST_F(ZmqPublisherTest, NoSubscribersIsNotAFailure) {
     EXPECT_EQ(metric_or_zero("axon_mds_publish_failure_total"), 0.0);
 }
 
-// BUG: the publisher counts a failed send as a dropped message, on the
-// assumption that a full high-water mark makes send() return EAGAIN. A PUB
-// socket never does: at the HWM libzmq drops the message and reports success.
-// So axon_mds_publish_failure_total cannot see a subscriber that stopped
-// draining -- the one case it exists for. (ZMQ_XPUB_NODROP, or comparing
-// against a subscriber-side sequence, would surface it.)
-TEST_F(ZmqPublisherTest, DISABLED_StalledSubscriberIsCountedAsDropped) {
+// A plain PUB socket drops at the high-water mark and reports success, so a
+// subscriber that stopped draining -- the one case
+// axon_mds_publish_failure_total exists for -- used to be invisible. The
+// socket now runs with ZMQ_XPUB_NODROP, which turns a full subscriber queue
+// into EAGAIN; the publisher counts it and resends lossy.
+TEST_F(ZmqPublisherTest, StalledSubscriberIsCountedAsDropped) {
     sub.set(zmq::sockopt::rcvhwm, 10);
     sub.connect(address);
     sub.set(zmq::sockopt::subscribe, "");
@@ -168,6 +167,50 @@ TEST_F(ZmqPublisherTest, DISABLED_StalledSubscriberIsCountedAsDropped) {
     // Never read again: well past sndhwm (100k) + rcvhwm + socket buffers.
     for (int i = 0; i < 400000; ++i) pub->publish(ticker_event("okx", "ETH_USDT_SPOT"));
     EXPECT_GT(metric_or_zero("axon_mds_publish_failure_total", {{"exchange", "okx"}}), 0.0);
+}
+
+// What NODROP must not cost: under NODROP alone a frame that would overflow
+// one subscriber is sent to nobody, so one stalled consumer would black out
+// every other. A subscriber that keeps reading must miss nothing.
+TEST_F(ZmqPublisherTest, HealthySubscriberMissesNothingWhileAnotherStalls) {
+    sub.set(zmq::sockopt::rcvhwm, 10);
+    sub.connect(address);
+    sub.set(zmq::sockopt::subscribe, "");
+    ASSERT_EQ(publish_until_received(ticker_event("okx", "X")).size(), 2u);
+
+    zmq::socket_t healthy{ctx, zmq::socket_type::sub};
+    healthy.connect(address);
+    healthy.set(zmq::sockopt::subscribe, "okx.ticker.ETH_USDT_SPOT");
+    // Slow joiner: publish until `healthy` has its subscription in place,
+    // then discard whatever arrived.
+    healthy.set(zmq::sockopt::rcvtimeo, 10);
+    for (int i = 0; i < 200; ++i) {
+        pub->publish(ticker_event("okx", "ETH_USDT_SPOT"));
+        std::vector<zmq::message_t> parts;
+        if (zmq::recv_multipart(healthy, std::back_inserter(parts))) break;
+    }
+    for (std::vector<zmq::message_t> parts;
+         zmq::recv_multipart(healthy, std::back_inserter(parts)); parts.clear()) {}
+    healthy.set(zmq::sockopt::rcvtimeo, 1000);
+
+    constexpr int n = 300000;
+    int received = 0;
+    auto take = [&](zmq::recv_flags f) {
+        std::vector<zmq::message_t> parts;
+        if (!zmq::recv_multipart(healthy, std::back_inserter(parts), f)) return false;
+        EXPECT_EQ(parts.size(), 2u);
+        EXPECT_EQ(parts[0].to_string(), "okx.ticker.ETH_USDT_SPOT");
+        ++received;
+        return true;
+    };
+    for (int i = 0; i < n; ++i) {
+        pub->publish(ticker_event("okx", "ETH_USDT_SPOT"));
+        while (take(zmq::recv_flags::dontwait)) {}
+    }
+    while (received < n && take(zmq::recv_flags::none)) {}
+
+    EXPECT_GT(metric_or_zero("axon_mds_publish_failure_total", {{"exchange", "okx"}}), 0.0);
+    EXPECT_EQ(received, n);
 }
 
 }  // namespace

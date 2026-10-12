@@ -216,7 +216,17 @@ class Harness {
     pump_for(1s);  // let in-flight updates land first
     for (const auto& id : created_) {
       const auto o = latest(id);
-      if (o && (o->status == OrderStatus::kOpen || o->status == OrderStatus::kPartiallyFilled)) {
+      if (!o.has_value()) {
+        // Never seen on the feed, so its state is unknown -- and the cancel
+        // needs a symbol the engine learns from there. Supply it and try:
+        // a cancel of something already closed just fails.
+        Order unseen;
+        unseen.order_id = id;
+        unseen.instrument = kSymbol;
+        known_[id] = unseen;
+        cancel(id);
+      } else if (o->status == OrderStatus::kOpen ||
+                 o->status == OrderStatus::kPartiallyFilled) {
         cancel(id);
         await_status(id, OrderStatus::kCancelled, 5s);
       }
@@ -224,6 +234,15 @@ class Harness {
   }
 
   // Latest feed state for an order, once one has arrived.
+  // Every update the feed delivered, for a failure message: "id:status ...".
+  std::string seen() const {
+    std::string out;
+    for (const auto& u : updates_) {
+      out += u.order_id + ":" + std::string(axon::models::to_string(u.status)) + " ";
+    }
+    return out.empty() ? "(no order updates at all)" : out;
+  }
+
   std::optional<Order> latest(const std::string& order_id) const {
     for (auto it = updates_.rbegin(); it != updates_.rend(); ++it)
       if (it->order_id == order_id) return *it;
@@ -368,6 +387,11 @@ class BinanceTestnet : public ::testing::Test {
     axon::util::init_logging(logging);
     h_ = new Harness();
     h_->pump([] { return h_->live(); }, 30s);
+    // Live is not yet delivering: Binance's user data stream drops the events
+    // of roughly its first half second, so the first test's order would never
+    // be seen on the feed. Measured; the engine covers the same window with a
+    // reconciliation pass after_live_settle_seconds later.
+    h_->pump_for(1s);
   }
 
   static void TearDownTestSuite() {
@@ -468,7 +492,7 @@ TEST_F(BinanceTestnet, PlacedOrderIsAcceptedAndReportedOnTheFeed) {
 TEST_F(BinanceTestnet, CancelIsAcceptedAndReportedOnTheFeed) {
   const auto id = place_resting(fresh_label("c"));
   ASSERT_FALSE(id.empty());
-  ASSERT_TRUE(h_->await_status(id, OrderStatus::kOpen));
+  ASSERT_TRUE(h_->await_status(id, OrderStatus::kOpen)) << id << " never open; saw " << h_->seen();
 
   auto [ok, err] = h_->cancel(id);
   EXPECT_TRUE(ok) << err;
@@ -672,8 +696,12 @@ TEST_F(BinanceTestnet, PlaceResultCarriesTheOrderId) {
   EXPECT_EQ(r.order->instrument, kSymbol);
   EXPECT_EQ(r.order->status, OrderStatus::kOpen);
   if (id) {
-    h_->cancel(*id);
-    h_->await_status(*id, OrderStatus::kCancelled);
+    // The cancel needs the symbol, which the engine learns from the feed: wait
+    // for the order to arrive there first, or the cancel fails locally.
+    ASSERT_TRUE(h_->await_status(*id, OrderStatus::kOpen)) << *id << " never open; saw " << h_->seen();
+    const auto [ok, err] = h_->cancel(*id);
+    EXPECT_TRUE(ok) << err;
+    EXPECT_TRUE(h_->await_status(*id, OrderStatus::kCancelled));
   }
 }
 

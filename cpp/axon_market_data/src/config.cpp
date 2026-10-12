@@ -23,6 +23,15 @@ AppConfig load_config(const std::string& path) {
             cfg.pub_address = zmq["pub_address"].as<std::string>();
     }
 
+    if (auto shm = root["shm"]) {
+        if (shm["enabled"])     cfg.shm.enabled     = shm["enabled"].as<bool>();
+        if (shm["name"])        cfg.shm.name        = shm["name"].as<std::string>();
+        if (shm["capacity_mb"]) cfg.shm.capacity_mb = shm["capacity_mb"].as<std::size_t>();
+        const std::size_t mb = cfg.shm.capacity_mb;
+        if (mb == 0 || (mb & (mb - 1)) != 0)
+            throw std::runtime_error("shm.capacity_mb must be a power of two");
+    }
+
     if (auto log = root["logging"]) {
         if (log["file"])      cfg.logging.file      = log["file"].as<std::string>();
         if (log["level"])     cfg.logging.level     = log["level"].as<std::string>();

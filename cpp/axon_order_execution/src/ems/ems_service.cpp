@@ -25,7 +25,13 @@ std::string pending_key(const std::string& exchange, std::int64_t id) {
 
 
 EmsService::EmsService(const Config& config, net::HttpClient* http)
-    : config_(config), http_(http), exchanges_(std::make_unique<ExchangeState>()) {}
+    : config_(config), http_(http), exchanges_(std::make_unique<ExchangeState>()) {
+  for (const auto& [name, exchange_config] : config_.exchanges) {
+    if (const ExchangeOps* ops = ops_for(name); ops != nullptr && ops->configure != nullptr) {
+      ops->configure(*exchanges_, exchange_config);
+    }
+  }
+}
 
 EmsService::~EmsService() = default;
 
@@ -76,6 +82,36 @@ const ExchangeConfig* EmsService::exchange_config(const std::string& name) const
   return it == config_.exchanges.end() ? nullptr : &it->second;
 }
 
+RateLimiter& EmsService::limiter(const std::string& exchange, const ExchangeOps& ops) {
+  if (const auto it = limiters_.find(exchange); it != limiters_.end()) {
+    return it->second;
+  }
+  const ExchangeConfig* cfg = exchange_config(exchange);
+  std::vector<RateLimitRule> rules;
+  if (cfg != nullptr && !cfg->rate_limits.empty()) {
+    rules = cfg->rate_limits;
+  } else {
+    rules.assign(ops.default_rate_limits.begin(), ops.default_rate_limits.end());
+  }
+  return limiters_.emplace(exchange, RateLimiter(std::move(rules))).first->second;
+}
+
+bool EmsService::rate_limited(const std::string& exchange, const ExchangeOps& ops,
+                              RateLimiter::Kind kind, std::string& why) {
+  const auto refused = limiter(exchange, ops).check(kind, now_seconds());
+  if (!refused.has_value()) {
+    return false;
+  }
+  util::get_metrics().inc_order_place_failure(exchange, "rate_limit");
+  why = "exchange rate limit: " + *refused;
+  return true;
+}
+
+double EmsService::rate_limit_utilisation(const std::string& exchange) {
+  const auto it = limiters_.find(exchange);
+  return it == limiters_.end() ? 0.0 : it->second.utilisation(now_seconds());
+}
+
 // ---------------------------------------------------------------------------
 void EmsService::place_order(const std::string& exchange,
                              const models::OrderRequest& request,
@@ -106,6 +142,11 @@ void EmsService::place_order(const std::string& exchange,
     return;
   }
 
+  if (std::string why; rate_limited(exchange, *ops, RateLimiter::Kind::kNewOrder, why)) {
+    callback(OrderResult{false, std::nullopt, why});
+    return;
+  }
+
   if (risk_ != nullptr) {
     if (const auto refused = risk_->check_new_order(exchange, request, now_seconds())) {
       util::get_metrics().inc_order_place_failure(exchange, "risk_" + refused->code);
@@ -117,6 +158,7 @@ void EmsService::place_order(const std::string& exchange,
   }
 
   if (place_via_websocket(exchange, *ops, request, callback)) {
+    limiter(exchange, *ops).record(now_seconds());
     remember_submission(key);
     if (risk_ != nullptr) {
       // Counted from the moment it leaves, not from the ack: a burst sent
@@ -269,7 +311,13 @@ void EmsService::cancel_order(const std::string& exchange,
     return;
   }
 
+  if (std::string why; rate_limited(exchange, *ops, RateLimiter::Kind::kCancel, why)) {
+    callback(false, why);
+    return;
+  }
+
   if (cancel_via_websocket(exchange, *ops, order_id, symbol, callback)) {
+    limiter(exchange, *ops).record(now_seconds());
     return;
   }
   callback(false, order_entry_unavailable(exchange, *ops));
@@ -312,6 +360,11 @@ void EmsService::modify_order(const std::string& exchange,
     existing = std::move(*found);
   }
 
+  if (std::string why; rate_limited(exchange, *ops, RateLimiter::Kind::kNewOrder, why)) {
+    callback(OrderResult{false, std::nullopt, why});
+    return;
+  }
+
   if (risk_ != nullptr) {
     if (const auto refused =
             risk_->check_modify(exchange, existing, amount, price, now_seconds())) {
@@ -324,6 +377,7 @@ void EmsService::modify_order(const std::string& exchange,
   }
 
   if (modify_via_websocket(exchange, *ops, existing, amount, price, callback)) {
+    limiter(exchange, *ops).record(now_seconds());
     return;
   }
   callback(
@@ -334,6 +388,31 @@ void EmsService::modify_order(const std::string& exchange,
 void EmsService::on_rpc_reply(const std::string& exchange, std::int64_t id,
                               bool success, std::string_view payload,
                               std::string_view error) {
+  // Every reply, ours or not, success or error, may carry the exchange's view
+  // of the account's usage -- and a throttle must be heard even when the
+  // request it answers has already timed out.
+  if (const ExchangeOps* ops = ops_for(exchange);
+      ops != nullptr && ops->read_rate_limits != nullptr) {
+    RateLimitFeedback feedback;
+    ops->read_rate_limits(payload, *exchanges_, core::wall_clock_ns() / 1'000'000LL,
+                          feedback);
+    if (!feedback.usage.empty() || feedback.throttled) {
+      limiter(exchange, *ops).observe(feedback, now_seconds());
+    }
+    if (feedback.throttled) {
+      util::get_metrics().inc_order_place_failure(exchange, "exchange_throttled");
+      if (feedback.retry_after_seconds > 0.0) {
+        AXON_LOG_ERROR(log(), "[{}] the exchange throttled this account; order entry "
+                              "paused for {:.1f}s",
+                       exchange, feedback.retry_after_seconds);
+      } else {
+        AXON_LOG_ERROR(log(), "[{}] the exchange throttled this account without saying "
+                              "for how long; order entry briefly paused",
+                       exchange);
+      }
+    }
+  }
+
   auto node = pending_.extract(pending_key(exchange, id));
   if (node.empty()) {
     return;  // not ours

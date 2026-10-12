@@ -70,12 +70,23 @@ struct JsonPass {
   }
 };
 
+// selfTradePreventionMode, or nullptr to leave the account's default.
+const char* stp_mode(models::SelfTradePrevention stp) noexcept {
+  switch (stp) {
+    case models::SelfTradePrevention::kCancelTaker: return "EXPIRE_TAKER";
+    case models::SelfTradePrevention::kCancelMaker: return "EXPIRE_MAKER";
+    case models::SelfTradePrevention::kCancelBoth: return "EXPIRE_BOTH";
+    case models::SelfTradePrevention::kExchangeDefault: break;
+  }
+  return nullptr;
+}
+
 // ALPHABETICAL ORDER IS LOAD-BEARING. Binance sorts parameters by name before
 // signing, so this sequence is part of the contract, not a style choice.
 template <typename Emit>
 void each_place_param(const models::OrderRequest& req, std::string_view api_key,
                       std::int64_t timestamp_ms, int recv_window_ms,
-                      Emit&& emit) noexcept {
+                      models::SelfTradePrevention stp, Emit&& emit) noexcept {
   const bool limit = req.order_type == models::OrderType::kLimit;
   emit("apiKey", [&](Writer& w) { w.raw(api_key); });
   // Always sent: the label, or our internal_order_id. See
@@ -92,6 +103,10 @@ void each_place_param(const models::OrderRequest& req, std::string_view api_key,
   }
   emit("quantity", [&](Writer& w) { w.decimal(req.amount); });
   emit("recvWindow", [&](Writer& w) { w.integer(recv_window_ms); });
+  // Alphabetical, like every other key: the signature is over this order.
+  if (const char* mode = stp_mode(stp); mode != nullptr) {
+    emit("selfTradePreventionMode", [&](Writer& w) { w.raw(mode); });
+  }
   emit("side", [&](Writer& w) {
     w.raw(req.side == models::OrderSide::kBuy ? "BUY" : "SELL");
   });
@@ -188,7 +203,7 @@ std::size_t BinanceBuilder::ws_place_order(char* out, std::size_t cap,
   out_id = id;
   return build_ws_request(
       out, cap, id, "order.place", api_secret, [&](auto& emit) {
-        each_place_param(req, api_key, timestamp_ms, recv_window_ms, emit);
+        each_place_param(req, api_key, timestamp_ms, recv_window_ms, stp_, emit);
       });
 }
 

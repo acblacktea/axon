@@ -144,6 +144,12 @@ public:
 
     // --- publishing ---------------------------------------------------------
     void inc_publish_failure(const std::string& exchange);
+    // The shared-memory feed. Records written is set from a periodic tick,
+    // not per record: this is the path a strategy on the same host waits on.
+    void set_shm_records(std::uint64_t written);
+    // Events that could not be written at all -- a symbol or exchange name
+    // longer than the record's field, or a book too deep for one record.
+    void inc_shm_refused(const std::string& exchange);
 
 private:
     struct Impl;

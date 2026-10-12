@@ -317,7 +317,9 @@ class BinanceRestImpl final : public ExchangeRest {
   }
 
   void get_positions(const std::string&, PositionsCallback cb) override {
-    send(signed_path("/fapi/v2/positionRisk", ""), true, "GET", {},
+    // v3 lists only symbols with a position or open orders; v2 lists every
+    // symbol on the exchange, hundreds of kilobytes of zeros.
+    send(signed_path("/fapi/v3/positionRisk", ""), true, "GET", {},
          [cb](const net::HttpResponse& r) {
            parse_array_at<models::Position>(r, {}, parse_position, cb);
          });

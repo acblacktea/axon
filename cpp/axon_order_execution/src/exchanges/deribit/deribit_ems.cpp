@@ -96,6 +96,26 @@ OrderResult interpret_reply(std::string_view payload,
   return OrderResult{true, std::move(order), {}};
 }
 
+// Deribit meters matching-engine requests with credits: a burst allowance
+// that refills at a steady rate, 5 requests a second on the default tier.
+// Holding to the refill rate never touches the burst allowance.
+constexpr RateLimitRule kDefaultRateLimits[] = {{1.0, 5}};
+
+// Deribit reports no usage, only the refusal: error code 10028,
+// "too_many_requests".
+void read_rate_limits(std::string_view payload, ExchangeState& state, std::int64_t,
+                      RateLimitFeedback& out) {
+  auto root = state.reply_doc.parse_copy(payload);
+  if (!root.has_value()) {
+    return;
+  }
+  if (auto err = (*root)["error"].as_object(); err.has_value()) {
+    if ((*err)["code"].as_int().value_or(0) == 10028) {
+      out.throttled = true;
+    }
+  }
+}
+
 }  // namespace
 
 const ExchangeOps& ems_ops() {
@@ -104,6 +124,10 @@ const ExchangeOps& ems_ops() {
       /*own_trade_connection=*/false,  // orders ride the private stream
       /*needs_symbol=*/false,          // cancels and amends by id alone
       build_place, build_cancel, build_modify, interpret_reply,
+      kDefaultRateLimits, read_rate_limits,
+      // No per-order self-trade parameter on private/buy and private/sell:
+      // the risk layer's own check is all there is.
+      /*configure=*/nullptr,
   };
   return kOps;
 }

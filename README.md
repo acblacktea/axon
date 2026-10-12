@@ -8,7 +8,7 @@ they share a host with the engine.
 | Service | Code | Binaries |
 |---|---|---|
 | **Order execution** (EMS + OMS + risk) | [cpp/axon_order_execution/](cpp/axon_order_execution/) | `axon_engine`, `axon_strategy` |
-| **Market data** (MDS) | [cpp/axon_market_data/](cpp/axon_market_data/) | `axon_market_data`, `mds_subscriber` |
+| **Market data** (MDS) | [cpp/axon_market_data/](cpp/axon_market_data/) | `axon_market_data`, `mds_subscriber`, `mds_shm_subscriber` |
 
 > The Python implementations under [python_deprecated/](python_deprecated/)
 > are deprecated and no longer maintained. The Python order-execution code is
@@ -20,25 +20,29 @@ they share a host with the engine.
 ## Architecture
 
 ```
-  Binance / OKX / Bybit / Hyperliquid                 Strategy processes
-              |                                 StrategyClient (C++ or Python)
-     WebSocket (+ REST snapshots)                  |                  |
-              |                              ZMQ ROUTER :5555    shared-memory
-     +--------+---------+                    ZMQ PUB    :5556    SPSC rings
-     |   Market data    |  ZMQ PUB :5558           |                  |
-     |  order books,    | ------------------> +----+------------------+----+
-     |  normalization   |   (to strategies)   |       axon_engine          |
-     +------------------+                     |                            |
-                                              |  risk  -- pre-trade checks |
-                                              |  EMS   -- place / cancel / |
-                                              |           modify           |
-                                              |  OMS   -- orders, fills,   |
-                                              |           positions,       |
-                                              |           reconciliation   |
-                                              +-------------+--------------+
-                                                            |
-                                         Binance / Bybit / OKX (USDT perps)
-                                                Deribit (options)
+  Binance / OKX / Bybit / Hyperliquid
+              |  WebSocket (+ REST snapshots)
+     +--------+---------+
+     |   Market data    |-- shm /dev/shm/axon_mds ---+  (same host)
+     |  order books,    |                            |
+     |  normalization   |-- ZMQ PUB :5558 -----------+  (any host)
+     +------------------+                            v
+                                          Strategy processes
+                                    StrategyClient (C++ or Python)
+                                       |                      |
+                                 ZMQ ROUTER :5555        shared-memory
+                                 ZMQ PUB    :5556        SPSC rings
+                                       |                      |
+                          +------------+----------------------+---+
+                          |              axon_engine              |
+                          |  risk  -- pre-trade checks            |
+                          |  EMS   -- place / cancel / modify     |
+                          |  OMS   -- orders, fills, positions,   |
+                          |           reconciliation              |
+                          +-------------------+-------------------+
+                                              |
+                               Binance / Bybit / OKX (USDT perps)
+                                       Deribit (options)
 ```
 
 ### Order execution — `axon_engine`
@@ -64,13 +68,19 @@ all order state. It is built from three independent modules:
   own. `ExchangeConnections` owns the TLS, HTTP, REST and WebSocket sessions, and
   routes feed events to the OMS and RPC replies to the EMS.
 - **Risk** (`risk/`) depends only on config and models. `RiskManager` checks
-  every order before it reaches the EMS, in this order: kill switch → order
-  rate → quantity / notional → price deviation from the reference price →
-  worst-case position. If there is no reference price, the order is refused.
-  `RiskFeed` gives it fills and positions from the OMS. The kill switch is
-  tripped by `SIGUSR1` (`SIGUSR2` releases it) or by creating the configured
-  kill file (deleting it releases). When `cancel_all_on_kill` is set, tripping
-  it also cancels active orders.
+  every order before it reaches the EMS, in this order: kill switch →
+  exchange feed down → order rate → quantity / notional → price deviation
+  from the reference price → worst-case position → self-trade against our own
+  resting orders. If there is no reference price, the order is refused.
+  It also tracks profit and loss (from engine start, and from 00:00 UTC each
+  day), and trips the kill switch by itself below `max_loss`. `RiskFeed`
+  gives it fills and positions from the OMS. The kill switch is also tripped
+  by `SIGUSR1` (`SIGUSR2` releases it) or by creating the configured kill file
+  (deleting it releases). When `cancel_all_on_kill` is set, tripping it also
+  cancels active orders.
+- **Exchange rate limits** are counted in the EMS against each exchange's
+  published windows, corrected by the usage the exchange reports on its
+  replies. New orders stop at 80% of a window; cancels may use all of it.
 
 Everything specific to one exchange lives in
 `include/axon/exchanges/<exchange>/` and `src/exchanges/<exchange>/`. Supported
@@ -103,9 +113,20 @@ fixed-point decimals.
 
 The MDS connects to exchange WebSockets for Binance, OKX, Bybit and
 Hyperliquid. It maintains local order books and republishes depth, ticker and
-kline data as normalized ZMQ PUB messages on `:5558`. Each message is two
-frames, `[topic, json]`, and the topic has the form
-`{exchange}.{data_type}.{symbol}`:
+kline data on two transports at once:
+
+- **Shared memory** for strategies on the same host: a lock-free
+  single-writer, many-reader broadcast ring (after Agrona's broadcast buffer)
+  of fixed binary records in `/dev/shm/axon_mds`. Readers include the
+  header-only `axon/market_data/shm_feed.h`; the writer never waits for them,
+  and a reader that falls a whole ring behind is told how much it missed.
+  Measured one hop, publish to prices in hand: p50 under 1 µs.
+- **ZMQ PUB** on `:5558` for strategies on other hosts, at p50 around 40 µs
+  on the same host (`mds_transport_bench`). Each message is two frames,
+  `[topic, json]`.
+
+Both carry the same events. The topic, the ZMQ subscription key and the
+shared-memory reader's filter, has the form `{exchange}.{data_type}.{symbol}`:
 
 ```
 binance_spot.depth.ETH_USDT_SPOT

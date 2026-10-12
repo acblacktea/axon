@@ -10,8 +10,17 @@
 exchanges:
   binance:
     env: testnet                # testnet | production -- leave this on testnet
+    # What the exchange does if one of our orders would trade with another of
+    # ours: cancel_taker (default) | cancel_maker | cancel_both | exchange_default
+    self_trade_prevention: cancel_taker
+    # Order-entry rate windows. Omit for Binance's published defaults
+    # (300 / 10s, 1200 / min); the counters on every reply override them.
+    # New orders stop at 80% of a window, cancels may use all of it.
+    # rate_limits:
+    #   - {window_seconds: 10, limit: 300}
+    #   - {window_seconds: 60, limit: 1200}
 
-reconciliation:                 # order state vs the venue's open orders
+reconciliation:                 # order state vs the exchange's open orders
   enabled: true
   interval_seconds: 30
 
@@ -54,7 +63,7 @@ cpp:
   shm_directory: "/dev/shm"
 
   # Pre-trade risk. Every place and amend is checked; cancels never are.
-  # Quantities are in the venue's units (BTC for BTCUSDT).
+  # Quantities are in the exchange's units (BTC for BTCUSDT).
   risk:
     enabled: true
     max_orders_per_strategy_per_second: 10
@@ -62,6 +71,14 @@ cpp:
     reference_refresh_seconds: 5
     kill_switch_file: "axon.kill"   # `touch axon.kill` stops trading, `rm` resumes
     cancel_all_on_kill: true
+    # Kill switch below this PnL (USDT), counted from engine start and from
+    # 00:00 UTC each day. Released only by SIGUSR2; stays released until the
+    # next day once released.
+    max_loss: 200
+    # Refuse an order that would trade against one of our own (post-only exempt).
+    self_trade_prevention: true
+    # Halt new orders to an exchange whose private feed is down this long.
+    exchange_down_halt_seconds: 5
     defaults:
       max_order_notional: 5000      # USDT per order
       max_price_deviation: 0.05     # limit price within 5% of the reference

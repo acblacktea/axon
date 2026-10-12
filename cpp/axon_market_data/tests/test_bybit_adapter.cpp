@@ -262,15 +262,15 @@ TEST_F(BybitTest, EmptyFrameIsCountedAsAParseError) {
     EXPECT_EQ(metric("axon_mds_parse_error_total", {{"exchange", "bybit_spot"}}), 1.0);
 }
 
-// BUG: see BinanceTest.DISABLED_MalformedJsonIsCountedAsAParseError.
-TEST_F(BybitTest, DISABLED_MalformedJsonIsCountedAsAParseError) {
+// See BinanceTest.MalformedJsonIsCountedAsAParseError.
+TEST_F(BybitTest, MalformedJsonIsCountedAsAParseError) {
     auto a = make(MarketType::Spot, {"ETH_USDT_SPOT"});
     A::feed(*a, R"({"topic":"orderbook.1000.ETHUSDT","type":"snapshot")");
     EXPECT_EQ(metric("axon_mds_parse_error_total", {{"exchange", "bybit_spot"}}), 1.0);
 }
 
-// BUG: see BinanceTest.DISABLED_FrameMissingAFieldIsDroppedNotThrown.
-TEST_F(BybitTest, DISABLED_FrameMissingAFieldIsDroppedNotThrown) {
+// See BinanceTest.FrameMissingAFieldIsDroppedNotThrown.
+TEST_F(BybitTest, FrameMissingAFieldIsDroppedNotThrown) {
     auto a = make(MarketType::Spot, {"ETH_USDT_SPOT"});
     EXPECT_NO_THROW(A::feed(*a, R"({"topic":"orderbook.1000.ETHUSDT","type":"snapshot","data":{}})"));
 }

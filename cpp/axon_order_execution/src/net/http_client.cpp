@@ -440,8 +440,12 @@ std::size_t HttpClient::poll() {
           c.tx.erase(0, w.bytes);
         }
         for (;;) {
+          // A full buffer is backpressure, not a lost connection: what is
+          // here is moved into the body below, and the rest is read on the
+          // next poll. A response larger than the buffer is ordinary --
+          // Binance's positionRisk lists every symbol.
           if (!c.rx.ensure_writable(4096)) {
-            return false;
+            break;
           }
           const IoResult r = c.socket.read(c.rx.writable(), c.rx.writable_size());
           if (r.status == IoStatus::kWouldBlock) {
@@ -521,8 +525,9 @@ std::size_t HttpClient::poll() {
       }
       if (c.tls.established()) {
         for (;;) {
+          // Full: as above. TLS keeps what it has decrypted until next time.
           if (!c.rx.ensure_writable(4096)) {
-            return false;
+            break;
           }
           const IoResult p = c.tls.read_plaintext(c.rx.writable(), c.rx.writable_size());
           if (p.status == IoStatus::kWouldBlock) {

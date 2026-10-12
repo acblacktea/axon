@@ -142,34 +142,30 @@ net::awaitable<void> HyperliquidAdapter::subscribe_all() {
 // ---------------------------------------------------------------------------
 
 void HyperliquidAdapter::handle_message(std::string_view raw) {
-    simdjson::padded_string padded(raw);
-    auto doc_result = json_parser_.iterate(padded);
-    if (doc_result.error()) {
-        get_metrics().inc_parse_error(exchange_name_);
-        logger_->warn("[{}] JSON parse error", exchange_name_);
-        return;
-    }
-    auto doc = std::move(doc_result).value();
+    handle_frame([&] {
+        simdjson::padded_string padded(raw);
+        auto doc = json_parser_.iterate(padded).value();
 
-    auto channel_field = doc["channel"];
-    if (channel_field.error()) return;
-    std::string channel(channel_field.get_string().value());
+        auto channel_field = doc["channel"];
+        if (!has_field(channel_field)) return;
+        std::string channel(channel_field.get_string().value());
 
-    if (channel == "pong") return;
-    if (channel == "error") {
+        if (channel == "pong") return;
+        if (channel == "error") {
+            auto data = doc["data"];
+            logger_->error("[{}] server error: {}", exchange_name_,
+                           has_field(data) ? data.get_string().value() : "unknown");
+            return;
+        }
+        if (channel == "subscriptionResponse") return;
+
         auto data = doc["data"];
-        logger_->error("[{}] server error: {}", exchange_name_,
-                       data.error() ? "unknown" : data.get_string().value());
-        return;
-    }
-    if (channel == "subscriptionResponse") return;
+        if (!has_field(data)) return;
 
-    auto data = doc["data"];
-    if (data.error()) return;
-
-    if (channel == "l2Book")      handle_l2_book(data.value());
-    else if (channel == "bbo")    handle_bbo(data.value());
-    else if (channel == "candle") handle_candle(data.value());
+        if (channel == "l2Book")      handle_l2_book(data.value());
+        else if (channel == "bbo")    handle_bbo(data.value());
+        else if (channel == "candle") handle_candle(data.value());
+    });
 }
 
 // ---------------------------------------------------------------------------

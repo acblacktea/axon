@@ -38,6 +38,8 @@ protected:
     std::shared_ptr<WebSocketClient> connect() {
         make(config(server.port()))->start();
         EXPECT_TRUE(run_until(ioc, [&] { return client->is_connected(); }));
+        // And registered on the server thread, so close_all()/drop_all() see it.
+        EXPECT_TRUE(run_until(ioc, [&] { return server.open_connections() == 1; }));
         return client;
     }
 
@@ -53,10 +55,9 @@ protected:
     }
     size_t downs() const { return states.size() - ups(); }
 
-    // The context is deliberately NOT run after stop(): stopping mid-connect
-    // leaves an operation pending on a stream stop() has already destroyed
-    // (see DISABLED_StopWhileConnectingIsMemorySafe). Pending handlers are
-    // destroyed with the io_context instead, never resumed.
+    // The context is not run after stop(): pending handlers are destroyed
+    // with the io_context, never resumed. (Resuming them is safe too -- see
+    // StopWhileConnectingIsMemorySafe.)
     void TearDown() override {
         if (client) client->stop();
     }
@@ -176,7 +177,7 @@ TEST_F(WsClientTest, ReconnectsAfterTheServerClosesCleanly) {
 
     EXPECT_EQ(states.size(), 3u);  // up, down, up
     EXPECT_FALSE(states[1].first);
-    EXPECT_EQ(server.handshakes(), 2);
+    EXPECT_TRUE(run_until(ioc, [&] { return server.handshakes() == 2; }));
     EXPECT_EQ(metric("axon_mds_ws_reconnect_total", tag), 1.0);
     EXPECT_EQ(metric("axon_mds_ws_connected", tag), 1.0);
 
@@ -190,17 +191,19 @@ TEST_F(WsClientTest, ReconnectsAfterTheConnectionIsReset) {
     connect();
     server.drop_all();
     ASSERT_TRUE(run_until(ioc, [&] { return ups() == 2; }));
-    EXPECT_EQ(server.handshakes(), 2);
+    EXPECT_TRUE(run_until(ioc, [&] { return server.handshakes() == 2; }));
     EXPECT_EQ(metric("axon_mds_ws_connected", tag), 1.0);
 }
 
 TEST_F(WsClientTest, RecoversFromRepeatedDrops) {
     connect();
     for (int i = 0; i < 3; ++i) {
+        // drop_all() only sees connections the server thread has registered.
+        ASSERT_TRUE(run_until(ioc, [&] { return server.handshakes() == i + 1; })) << i;
         server.drop_all();
         ASSERT_TRUE(run_until(ioc, [&] { return ups() == size_t(i) + 2; }, 8s)) << i;
     }
-    EXPECT_EQ(server.handshakes(), 4);
+    EXPECT_TRUE(run_until(ioc, [&] { return server.handshakes() == 4; }));
     EXPECT_EQ(metric("axon_mds_ws_session_duration_seconds_count", tag), 3.0);
 }
 
@@ -325,16 +328,16 @@ TEST_F(WsClientTest, StartIsIdempotent) {
 }
 
 // ===========================================================================
-// Known defects
+// Stop mid-connect, backoff reset, dead-peer detection
 // ===========================================================================
 
-// BUG (use-after-free, found by ASan): stop() destroys the stream with
-// ws_.reset() while a connect or TLS handshake on it is still in flight. The
-// aborted operation then completes against freed memory. Service::stop()
-// happens to stop the io_context straight afterwards, so the handler never
-// runs today; stopping one client while the loop keeps going -- restarting a
-// single venue, say -- would corrupt the heap. Only an ASan build reports it.
-TEST_F(WsClientTest, DISABLED_StopWhileConnectingIsMemorySafe) {
+// stop() used to destroy the stream with ws_.reset() while a connect or TLS
+// handshake on it was still in flight; the aborted operation then completed
+// against freed memory (ASan: use-after-free). Stopping one client while the
+// loop keeps going -- restarting a single venue, say -- would corrupt the
+// heap. The coroutines now hold the stream and the client by shared_ptr.
+// Run under ASan to make this test meaningful.
+TEST_F(WsClientTest, StopWhileConnectingIsMemorySafe) {
     tcp::acceptor              raw(ioc, {net::ip::make_address("127.0.0.1"), 0});
     std::optional<tcp::socket> held;
     raw.async_accept([&](boost::system::error_code ec, tcp::socket s) {
@@ -349,13 +352,12 @@ TEST_F(WsClientTest, DISABLED_StopWhileConnectingIsMemorySafe) {
     EXPECT_FALSE(client->is_connected());
 }
 
-// BUG: the backoff attempt counter lives for the whole reconnect() loop and is
-// never reset after a connection succeeds. Every drop after a healthy session
-// therefore waits longer than the last -- base, 2x, 4x, ... up to the cap -- so
-// a venue that resets its connections daily (several do) ends up with the
-// maximum delay, 60s in production, as its normal reconnect time. There is
-// also no jitter, so every connection that drops together retries in lockstep.
-TEST_F(WsClientTest, DISABLED_BackoffResetsAfterAHealthySession) {
+// The backoff attempt counter used to live for the whole reconnect loop and
+// never reset after a connection succeeded, so every drop after a healthy
+// session waited longer than the last -- base, 2x, 4x, ... up to the cap --
+// and a venue that resets its connections daily ended up with the maximum
+// delay, 60s in production, as its normal reconnect time.
+TEST_F(WsClientTest, BackoffResetsAfterAHealthySession) {
     auto c                 = config(server.port());
     c.reconnect_base_delay = 0.05;
     c.reconnect_max_delay  = 5.0;
@@ -364,6 +366,7 @@ TEST_F(WsClientTest, DISABLED_BackoffResetsAfterAHealthySession) {
 
     for (int i = 0; i < 5; ++i) {
         run_for(ioc, 100ms);  // a healthy session
+        ASSERT_TRUE(run_until(ioc, [&] { return server.handshakes() == i + 1; })) << i;
         const double dropped = steady_seconds();
         server.drop_all();
         ASSERT_TRUE(run_until(ioc, [&] { return ups() == size_t(i) + 2; }, 10s));
@@ -372,12 +375,12 @@ TEST_F(WsClientTest, DISABLED_BackoffResetsAfterAHealthySession) {
     }
 }
 
-// BUG: Config::pong_timeout exists but nothing reads it. With a text heartbeat
-// nothing ever checks that the venue answers, and Beast's suggested client
-// timeouts disable idle pings, so a half-open TCP connection -- the venue gone,
-// no RST -- is never detected. The client sits "connected" forever while every
-// topic on it is silent.
-TEST_F(WsClientTest, DISABLED_SilentPeerIsDetectedWithinPingPlusPongTimeout) {
+// Config::pong_timeout used to be read by nothing. With a text heartbeat
+// nothing checked that the venue answers, and Beast's suggested client
+// timeouts disable idle pings, so a half-open TCP connection -- the venue
+// gone, no RST -- was never detected. The client sat "connected" forever
+// while every topic on it was silent.
+TEST_F(WsClientTest, SilentPeerIsDetectedWithinPingPlusPongTimeout) {
     auto c          = config(server.port());
     c.ping_interval = 1s;
     c.pong_timeout  = 1s;

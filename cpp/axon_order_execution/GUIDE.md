@@ -267,7 +267,7 @@ fill_reconciliation:          # 成交对账
   overlap_seconds: 30         # 每次多拉一段防边界漏单
 
 websocket:
-  heartbeat_interval_seconds: 10
+  heartbeat_interval_seconds: 10 # 静默一个周期发 WebSocket ping，三个周期没有任何回应才判定断线
   reconnect_delay_seconds: 1
   max_reconnect_delay_seconds: 60
   request_timeout_seconds: 30 # 也是每个握手阶段的预算
@@ -327,6 +327,10 @@ cpp:
     reference_refresh_seconds: 5           # 对下面列出的 exchange:instrument 定期拉 ticker
     kill_switch_file: /var/run/axon.kill   # 文件存在 = 熔断
     cancel_all_on_kill: true               # 熔断时撤掉所有挂单
+    max_loss: 2000                         # PnL 低于 -2000（计价货币）自动熔断；不配 = 不限
+    pnl_exclude_exchanges: [deribit]       # 不计入 PnL 的交易所（默认就是 deribit）
+    self_trade_prevention: true            # 拒绝会和自己挂单成交的新单
+    exchange_down_halt_seconds: 5          # 某家回报连接断开超过 5 秒，停止向这家下新单；0 = 关闭
     defaults:                              # 对所有合约生效
       max_order_notional: 50000            # 单笔 |价格 × 数量|，计价货币
       max_price_deviation: 0.05            # 限价偏离参考价超过 5% 拒单
@@ -336,7 +340,7 @@ cpp:
         max_position: 2                    # 最坏情况净持仓上限
 ```
 
-检查顺序：熔断开关 → 下单频率 → 单笔数量和名义价值 → 价格偏离 → 持仓。
+检查顺序：熔断开关 → 交易所断线 → 下单频率 → 单笔数量和名义价值 → 价格偏离 → 持仓 → 自成交。
 
 - **持仓**用的是"最坏情况"：交易所持仓（对账器定期刷新），加上之后到达的成交，再加上**所有在途挂单**全部成交后的结果。
   已经发出、还没收到交易所确认的单也计入，否则失控策略在第一笔回执回来之前打出的一串单都能绕过限额。
@@ -345,6 +349,16 @@ cpp:
   需要参考价的检查（市价单的名义价值、价格偏离）**拿不到新鲜参考价就拒单**，不会跳过检查。
 - 数量和价格都是**交易所单位**：Binance BTCUSDT 的数量是 BTC，Deribit BTC-PERPETUAL 的数量是 USD 合约数。
 - 没配任何限额时引擎照常启动，但会打一条醒目的警告。
+- **自成交**：新单如果会和自己在同一交易所、同一合约上的反向挂单成交（限价单价格够得着对方；市价单则看对方挂单是否在参考价或更优的位置，
+  没有参考价时一律视为会成交），直接拒单。post-only 单豁免，因为交易所不会让它吃单。
+  交易所侧还有一层兜底：Binance / Bybit / OKX 每笔新单都带上 STP 参数（`exchanges.<x>.self_trade_prevention`，
+  默认 `cancel_taker`），Deribit 没有逐单参数，只有本地这一层。
+- **交易所断线**：某家的私有回报连接断开超过 `exchange_down_halt_seconds`，就拒绝向这家下新单（`exchange_down`），
+  因为这段时间的成交引擎看不到，持仓检查用的是过期的持仓。连接恢复后自动解除。撤单不受影响。和熔断开关一样，`enabled: false` 也关不掉它。
+- **PnL 与亏损熔断**：从引擎启动起算，之后每天 00:00 UTC 重新起算。成交按成交价记现金流（USDT/USDC/USD 手续费计入成本），
+  持仓按参考价估值，起算时已有的持仓按起算后第一个参考价估值。低于 `-max_loss` 时自动拉熔断（来源 `loss`），并按配置撤单。
+  只能由人工（`SIGUSR2`）解除，删熔断文件解除不了；解除后当天不会再次自动触发。拿不到新鲜参考价的持仓不计入，心跳日志里会标出来。
+  PnL 是各合约计价货币的简单相加，只对同一种稳定币计价的线性合约有意义，所以 Deribit（反向合约和期权）默认排除。
 
 **熔断开关（kill switch）**：
 
@@ -357,7 +371,14 @@ kill -USR2 <engine-pid>         # 信号方式恢复
 
 被风控拒绝的单子会在本地直接回复 `risk: <原因>`，不会发到交易所；同时计入
 `axon_order_place_failure_total{error_type="risk_<code>"}`，code 取值为 `kill_switch` / `rate` / `order_qty` /
-`order_notional` / `price_deviation` / `no_reference_price` / `position`。
+`order_notional` / `price_deviation` / `no_reference_price` / `position` / `exchange_down` / `self_trade`。
+
+**交易所限频**（在 EMS 里，不属于风控模块）：每家交易所按自己公布的下单频率窗口计数（Binance 300 次/10 秒 + 1200 次/分钟，
+Bybit 10 次/秒，OKX 60 次/2 秒，Deribit 5 次/秒；账户档位不同时在 `exchanges.<x>.rate_limits` 里配置）。
+新单和改单用到窗口的 80% 就在本地拒绝（`exchange rate limit: ...`），**撤单可以用满 100%**，保证额度紧张时也能撤出来。
+交易所在回复里报告的用量（Binance 的 `rateLimits`、Bybit 的 `X-Bapi-Limit-*`）会覆盖本地计数，
+收到限频错误（Binance 429/418、Bybit 10006、OKX 50011、Deribit 10028）时暂停该交易所的所有请求，直到交易所给的恢复时间。
+计入 `axon_order_place_failure_total{error_type="rate_limit"}`，心跳日志里有各家的用量百分比。
 
 ### 3.4 跑引擎
 

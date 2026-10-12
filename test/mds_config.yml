@@ -3,7 +3,8 @@
 #   ./bin/axon_market_data mds_config.yml
 #
 # Publishes on ZMQ PUB as two frames, [topic, json], topic
-# "{exchange}.{data_type}.{symbol}", e.g. binance_usdt_futures.ticker.BTC_USDT_PERP.
+# "{exchange}.{data_type}.{symbol}", e.g. binance_usdt_futures.ticker.BTC_USDT_PERP,
+# and the same events as binary records to shared memory (/dev/shm/axon_mds).
 #
 # NOTE: market data is always from the PRODUCTION venues -- the service has no
 # testnet endpoints. The engine below trades on Binance TESTNET, whose prices
@@ -13,6 +14,14 @@
 
 zmq:
   pub_address: "tcp://127.0.0.1:5558"   # strategies connect here
+
+# Same-host transport, next to ZMQ: strategies on this machine read the feed
+# from /dev/shm/<name> (axon/market_data/shm_feed.h); ones on other machines
+# use ZMQ. Same events on both.
+shm:
+  enabled: true
+  name: axon_mds
+  capacity_mb: 64               # ring size, a power of two
 
 logging:
   file: "logs/mds.log"                  # rotated daily -> logs/mds_YYYY-MM-DD.log

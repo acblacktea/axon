@@ -56,10 +56,21 @@ void Reconciler::on_session_live() {
   next_order_pass_ = now;
   next_fill_pass_ = now;
   next_position_pass_ = now;
+  // And once more when the stream has settled: see after_live_settle_seconds.
+  if (config_.reconciliation.after_live_settle_seconds > 0.0) {
+    settle_pass_at_ = now + config_.reconciliation.after_live_settle_seconds;
+  }
 }
 
 void Reconciler::poll() {
   const double now = now_seconds();
+
+  if (settle_pass_at_ >= 0.0 && now >= settle_pass_at_) {
+    settle_pass_at_ = -1.0;
+    next_order_pass_ = now;
+    next_fill_pass_ = now;
+    next_position_pass_ = now;
+  }
 
   if (config_.reconciliation.enabled && now >= next_order_pass_ &&
       !order_pass_in_flight_) {

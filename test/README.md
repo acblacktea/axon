@@ -7,7 +7,8 @@
 test/
   bin/axon_market_data   行情服务
   bin/axon_engine        下单引擎（EMS + OMS + 风控）
-  bin/mds_subscriber     行情订阅示例，看行情有没有在推
+  bin/mds_subscriber     行情订阅示例（ZMQ），看行情有没有在推
+  bin/mds_shm_subscriber 行情订阅示例（共享内存），也能看单跳延迟
   bin/axon_strategy      策略客户端示例：查询、看回报、测连通
   mds_config.yml         行情配置：Binance U 本位永续，BTC / ETH
   engine_config.yml      引擎配置：Binance 测试网，带风控
@@ -18,7 +19,7 @@ test/
 ```bash
 cmake --build ../cpp/axon_order_execution/build -j && cmake --build ../cpp/axon_market_data/build -j
 cp ../cpp/axon_order_execution/build/{axon_engine,axon_strategy} \
-   ../cpp/axon_market_data/build/{axon_market_data,mds_subscriber} bin/
+   ../cpp/axon_market_data/build/{axon_market_data,mds_subscriber,mds_shm_subscriber} bin/
 ```
 
 编译参数（目前是 Release、`-O3`，没开 `-march=native` 和 LTO），以及怎么往上开，见 [cpp/BUILD.md](../cpp/BUILD.md) 第 4 节。
@@ -41,6 +42,9 @@ source ~/.config/axon/binance-testnet.env
 ```bash
 # 行情：应该持续打印 ticker / depth / kline
 ./bin/mds_subscriber tcp://127.0.0.1:5558 binance_usdt_futures.ticker
+# 同一份行情走共享内存；加 --stats 只看速率和单跳延迟
+./bin/mds_shm_subscriber axon_mds binance_usdt_futures.ticker
+./bin/mds_shm_subscriber axon_mds "" --stats
 
 # 引擎：查挂单，然后持续看订单和成交回报
 ./bin/axon_strategy --id my_strategy --router tcp://127.0.0.1:5555 --pub tcp://127.0.0.1:5556 --orders
@@ -53,7 +57,8 @@ source ~/.config/axon/binance-testnet.env
 
 | | 地址 | 协议 |
 |---|---|---|
-| 行情 | `tcp://127.0.0.1:5558`（ZMQ SUB） | 两帧 `[topic, json]`，topic 为 `{exchange}.{data_type}.{symbol}`，例如 `binance_usdt_futures.ticker.BTC_USDT_PERP` |
+| 行情（同机） | 共享内存 `/dev/shm/axon_mds` | include `axon/market_data/shm_feed.h`（纯头文件，只依赖 C++20 和 POSIX），`shm::Reader::poll()` 拿到二进制记录，价格直接读，不用解析。见 `cpp/axon_market_data/example/shm_subscriber.cpp` |
+| 行情（跨机） | `tcp://127.0.0.1:5558`（ZMQ SUB） | 两帧 `[topic, json]`，topic 为 `{exchange}.{data_type}.{symbol}`，例如 `binance_usdt_futures.ticker.BTC_USDT_PERP` |
 | 下单 / 查询 | `tcp://127.0.0.1:5555`（ZMQ DEALER） | C++ 用 `axon::client::StrategyClient`，Python 用 `python_deprecated/axon_order_execution/axon_order_execution/client/strategy_client.py` |
 | 订单 / 成交回报 | `tcp://127.0.0.1:5556`（ZMQ SUB） | 按 strategy_id 订阅 |
 

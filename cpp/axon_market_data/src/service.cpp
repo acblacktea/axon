@@ -8,7 +8,18 @@ Service::Service(const AppConfig& cfg, std::shared_ptr<spdlog::logger> logger)
     : cfg_(cfg)
     , logger_(logger ? std::move(logger) : spdlog::default_logger())
     , silent_check_(ioc_)
-    , publisher_(cfg.pub_address, logger_) {}
+    , publisher_(cfg.pub_address, logger_)
+    , shm_tick_(ioc_) {
+    if (cfg_.shm.enabled) {
+        try {
+            shm_.emplace(cfg_.shm, logger_);
+        } catch (const std::exception& e) {
+            // ZMQ alone still serves every subscriber, so this is not fatal --
+            // but a strategy configured for shared memory will see nothing.
+            logger_->error("shared-memory feed disabled: {}", e.what());
+        }
+    }
+}
 
 Service::~Service() { stop(); }
 
@@ -49,6 +60,8 @@ void Service::run() {
         });
     }
 
+    if (shm_) schedule_shm_tick();
+
     // Graceful shutdown on SIGINT / SIGTERM
     boost::asio::signal_set signals(ioc_, SIGINT, SIGTERM);
     signals.async_wait([this](const boost::system::error_code&, int sig) {
@@ -66,6 +79,7 @@ void Service::stop() {
     running_ = false;
 
     silent_check_.cancel();
+    shm_tick_.cancel();
 
     for (auto& adapter : adapters_)
         adapter->stop();
@@ -76,7 +90,19 @@ void Service::stop() {
 }
 
 void Service::on_event(const MarketDataEvent& event) {
+    // Shared memory first: it is the cheaper of the two and the one a
+    // same-host strategy is waiting on.
+    if (shm_) shm_->publish(event);
     publisher_.publish(event);
+}
+
+void Service::schedule_shm_tick() {
+    shm_tick_.expires_after(std::chrono::seconds(1));
+    shm_tick_.async_wait([this](const boost::system::error_code& ec) {
+        if (ec) return; // cancelled by shutdown
+        shm_->tick();
+        schedule_shm_tick();
+    });
 }
 
 } // namespace axon::market_data

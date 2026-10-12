@@ -100,6 +100,9 @@ class Reconciler {
   double next_order_pass_ = 0.0;
   double next_fill_pass_ = 0.0;
   double next_position_pass_ = 0.0;
+  // When the second, post-warm-up pass after a session went live is due;
+  // negative when none is pending.
+  double settle_pass_at_ = -1.0;
   // Only one pass of each kind in flight; a slow exchange must not queue up
   // overlapping snapshots that then apply out of order.
   bool order_pass_in_flight_ = false;

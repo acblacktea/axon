@@ -13,6 +13,7 @@ add_executable(mds_tests
     test_hyperliquid_adapter.cpp
     test_zmq_publisher.cpp
     test_websocket_client.cpp
+    test_shm_feed.cpp
 )
 
 # So a test can load the config.yml shipped next to the sources.

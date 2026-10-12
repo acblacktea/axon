@@ -106,6 +106,8 @@ struct MetricsClient::Impl {
     prometheus::Family<prometheus::Counter>*   rest_failure      = nullptr;
 
     prometheus::Family<prometheus::Counter>*   publish_failure   = nullptr;
+    prometheus::Family<prometheus::Gauge>*     shm_records       = nullptr;
+    prometheus::Family<prometheus::Counter>*   shm_refused       = nullptr;
 
     void build() {
         subscription = &prometheus::BuildGauge()
@@ -160,7 +162,7 @@ struct MetricsClient::Impl {
                                 .Register(*registry);
         parse_error = &prometheus::BuildCounter()
                            .Name("axon_mds_parse_error_total")
-                           .Help("Frames that failed to parse as JSON")
+                           .Help("Frames dropped as unreadable: invalid JSON, or a field missing or malformed")
                            .Register(*registry);
 
         resync = &prometheus::BuildCounter()
@@ -184,6 +186,15 @@ struct MetricsClient::Impl {
                                .Name("axon_mds_publish_failure_total")
                                .Help("ZMQ sends that failed or were dropped")
                                .Register(*registry);
+        shm_records = &prometheus::BuildGauge()
+                           .Name("axon_mds_shm_records")
+                           .Help("Records written to the shared-memory feed since start")
+                           .Register(*registry);
+        shm_refused = &prometheus::BuildCounter()
+                           .Name("axon_mds_shm_refused_total")
+                           .Help("Events that did not fit a shared-memory record and were "
+                                 "published over ZMQ only")
+                           .Register(*registry);
     }
 };
 
@@ -317,6 +328,16 @@ void MetricsClient::inc_rest_snapshot_failure(const std::string& exchange) {
 void MetricsClient::inc_publish_failure(const std::string& exchange) {
     AXON_GUARD();
     impl_->publish_failure->Add({{"exchange", exchange}}).Increment();
+}
+
+void MetricsClient::set_shm_records(std::uint64_t written) {
+    AXON_GUARD();
+    impl_->shm_records->Add({}).Set(static_cast<double>(written));
+}
+
+void MetricsClient::inc_shm_refused(const std::string& exchange) {
+    AXON_GUARD();
+    impl_->shm_refused->Add({{"exchange", exchange}}).Increment();
 }
 
 #undef AXON_GUARD

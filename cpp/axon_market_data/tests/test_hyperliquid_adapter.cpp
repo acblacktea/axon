@@ -233,15 +233,15 @@ TEST_F(HyperliquidTest, EmptyFrameIsCountedAsAParseError) {
     EXPECT_EQ(metric("axon_mds_parse_error_total", {{"exchange", "hyperliquid"}}), 1.0);
 }
 
-// BUG: see BinanceTest.DISABLED_MalformedJsonIsCountedAsAParseError.
-TEST_F(HyperliquidTest, DISABLED_MalformedJsonIsCountedAsAParseError) {
+// See BinanceTest.MalformedJsonIsCountedAsAParseError.
+TEST_F(HyperliquidTest, MalformedJsonIsCountedAsAParseError) {
     auto a = make({"ETH_USD_PERP"});
     A::feed(*a, R"({"channel":"l2Book","data":{"coin":"ETH")");
     EXPECT_EQ(metric("axon_mds_parse_error_total", {{"exchange", "hyperliquid"}}), 1.0);
 }
 
-// BUG: see BinanceTest.DISABLED_FrameMissingAFieldIsDroppedNotThrown.
-TEST_F(HyperliquidTest, DISABLED_FrameMissingAFieldIsDroppedNotThrown) {
+// See BinanceTest.FrameMissingAFieldIsDroppedNotThrown.
+TEST_F(HyperliquidTest, FrameMissingAFieldIsDroppedNotThrown) {
     auto a = make({"ETH_USD_PERP"});
     EXPECT_NO_THROW(A::feed(*a, R"({"channel":"l2Book","data":{"coin":"ETH"}})"));
 }

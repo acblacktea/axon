@@ -384,24 +384,22 @@ TEST_F(OkxTest, EmptyFrameIsCountedAsAParseError) {
     EXPECT_EQ(metric("axon_mds_parse_error_total", {{"exchange", "okx"}}), 1.0);
 }
 
-// BUG -- CRASHES THE PROCESS. A frame truncated after a complete value makes
+// Used to crash the process. A frame truncated after a complete value makes
 // doc["event"] fail with INCOMPLETE_ARRAY_OR_OBJECT, which simdjson defines as
-// fatal and unrecoverable: the document must not be touched again. The
-// handler reads it as "no event field" and goes on to doc["arg"]
-// (okx_adapter.cpp), which trips an internal SIMDJSON_ASSUME -- UBSan reports
-// "execution reached an unreachable program point" and a release build
-// segfaults. Every adapter follows the same pattern of continuing after a
-// lookup error, so the others are exposed to the same undefined behaviour;
-// OKX is the one this input reliably brings down.
-TEST_F(OkxTest, DISABLED_TruncatedFrameIsCountedNotFatal) {
+// fatal: the document must not be touched again. The handler read it as "no
+// event field" and went on to doc["arg"], tripping an internal SIMDJSON_ASSUME
+// (UBSan: "execution reached an unreachable program point"; a release build
+// segfaulted). Every adapter followed that pattern; has_field() now lets only
+// NO_SUCH_FIELD through and turns anything else into a counted drop.
+TEST_F(OkxTest, TruncatedFrameIsCountedNotFatal) {
     auto a = make({"ETH_USDT_SPOT"});
     A::feed(*a, R"({"arg":{"channel":"books","instId":"ETH-USDT"},"action":"snapshot")");
     EXPECT_EQ(sink.size(), 0u);
     EXPECT_EQ(metric("axon_mds_parse_error_total", {{"exchange", "okx"}}), 1.0);
 }
 
-// BUG: see BinanceTest.DISABLED_FrameMissingAFieldIsDroppedNotThrown.
-TEST_F(OkxTest, DISABLED_FrameMissingAFieldIsDroppedNotThrown) {
+// See BinanceTest.FrameMissingAFieldIsDroppedNotThrown.
+TEST_F(OkxTest, FrameMissingAFieldIsDroppedNotThrown) {
     auto a = make({"ETH_USDT_SPOT"});
     EXPECT_NO_THROW(A::feed(*a, R"({"arg":{"channel":"books","instId":"ETH-USDT"},)"
                                 R"("action":"snapshot","data":[{"asks":[],"bids":[]}]})"));

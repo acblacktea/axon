@@ -156,6 +156,11 @@ class ExchangeSession {
   int backoff_attempt_ = 0;
   std::uint64_t reconnects_ = 0;
   double last_activity_ = 0.0;
+  // Liveness probes: when the last one went out, and how many control frames
+  // (pings and pongs) had arrived as of the last poll. A control frame is
+  // proof of life as much as a message is.
+  double last_probe_ = 0.0;
+  std::uint64_t control_frames_seen_ = 0;
 
   // Deadline for the CURRENT handshake stage: connect, authenticate,
   // subscribe. Each stage gets the full budget and resets it on entry.

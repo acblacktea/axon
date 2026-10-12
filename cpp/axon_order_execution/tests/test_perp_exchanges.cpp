@@ -421,7 +421,7 @@ TEST(BybitBuilder, PlaceOrderBodyQuotesNumbers) {
 
   char buf[exchanges::bybit::kMaxRequestBytes];
   const std::size_t n =
-      exchanges::bybit::BybitBuilder::place_order_body(buf, sizeof(buf), req);
+      exchanges::bybit::BybitBuilder{}.place_order_body(buf, sizeof(buf), req);
   const std::string body(buf, n);
 
   EXPECT_NE(body.find(R"("category":"linear")"), std::string::npos) << body;
@@ -434,7 +434,7 @@ TEST(BybitBuilder, PlaceOrderBodyQuotesNumbers) {
   req.post_only = false;
   req.order_type = OrderType::kMarket;
   const std::size_t m =
-      exchanges::bybit::BybitBuilder::place_order_body(buf, sizeof(buf), req);
+      exchanges::bybit::BybitBuilder{}.place_order_body(buf, sizeof(buf), req);
   EXPECT_NE(std::string(buf, m).find(R"("timeInForce":"IOC")"),
             std::string::npos);
 }
@@ -614,7 +614,7 @@ TEST(OkxBuilder, PlaceOrderBody) {
   req.label = "chase";
 
   char buf[exchanges::okx::kMaxRequestBytes];
-  std::size_t n = exchanges::okx::OkxBuilder::place_order_body(buf, sizeof(buf), req);
+  std::size_t n = exchanges::okx::OkxBuilder{}.place_order_body(buf, sizeof(buf), req);
   std::string body(buf, n);
   EXPECT_NE(body.find(R"("tdMode":"cross")"), std::string::npos) << body;
   EXPECT_NE(body.find(R"("ordType":"limit")"), std::string::npos) << body;
@@ -624,7 +624,7 @@ TEST(OkxBuilder, PlaceOrderBody) {
 
   // post_only replaces ordType rather than adding a flag.
   req.post_only = true;
-  n = exchanges::okx::OkxBuilder::place_order_body(buf, sizeof(buf), req);
+  n = exchanges::okx::OkxBuilder{}.place_order_body(buf, sizeof(buf), req);
   body = std::string(buf, n);
   EXPECT_NE(body.find(R"("ordType":"post_only")"), std::string::npos) << body;
   EXPECT_EQ(body.find(R"("post_only":true)"), std::string::npos) << body;

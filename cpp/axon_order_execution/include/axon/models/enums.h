@@ -43,6 +43,17 @@ enum class Liquidity : std::uint8_t {
   kTaker = 1,
 };
 
+// What the exchange does when an order would trade against another order of
+// the same account. Sent on every new order where the exchange takes it per
+// order (Binance, Bybit, OKX); kExchangeDefault sends nothing and leaves the
+// account's setting in force.
+enum class SelfTradePrevention : std::uint8_t {
+  kExchangeDefault = 0,
+  kCancelTaker = 1,  // the incoming order is cancelled; the resting one stays
+  kCancelMaker = 2,
+  kCancelBoth = 3,
+};
+
 // Strategy -> engine, over the ZMQ ROUTER socket.
 enum class CommandType : std::uint8_t {
   kPlaceOrder = 0,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include "axon/market_data/config.h"
 #include "axon/market_data/hyperliquid_adapter.h"
 #include "axon/market_data/okx_adapter.h"
+#include "axon/market_data/shm_publisher.h"
 #include "axon/market_data/zmq_publisher.h"
 
 namespace axon::market_data {
@@ -29,12 +31,17 @@ public:
 
 private:
     void on_event(const MarketDataEvent& event);
+    void schedule_shm_tick();
 
     AppConfig                    cfg_;
     std::shared_ptr<spdlog::logger> logger_;
     boost::asio::io_context      ioc_;
     boost::asio::steady_timer    silent_check_;
     ZmqPublisher                 publisher_;
+    // Same events, same thread, for strategies on this host. Empty when
+    // disabled or when the segment could not be created.
+    std::optional<ShmPublisher>  shm_;
+    boost::asio::steady_timer    shm_tick_;
     std::vector<std::shared_ptr<Adapter>> adapters_;
     bool                         running_ = false;
 };

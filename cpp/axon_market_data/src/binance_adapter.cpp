@@ -208,39 +208,32 @@ net::awaitable<void> BinanceAdapter::subscribe_streams() {
 // ---------------------------------------------------------------------------
 
 void BinanceAdapter::handle_message(std::string_view raw) {
-    simdjson::padded_string padded(raw);
-    auto doc_result = json_parser_.iterate(padded);
-    if (doc_result.error()) {
-        get_metrics().inc_parse_error(exchange_name_);
-        logger_->warn("[{}] JSON parse error", exchange_name_);
-        return;
-    }
-    auto doc = std::move(doc_result).value();
+    handle_frame([&] {
+        simdjson::padded_string padded(raw);
+        auto doc = json_parser_.iterate(padded).value();
 
-    // Skip subscription confirmations
-    auto result_field = doc["result"];
-    if (!result_field.error()) return;
+        // Skip subscription confirmations
+        if (has_field(doc["result"])) return;
 
-    // Check event type field
-    auto e_field = doc["e"];
-    if (!e_field.error()) {
-        auto etype = e_field.get_string().value();
-        if (etype == "depthUpdate") {
-            handle_depth_update(doc, raw);
-            return;
+        // Check event type field
+        auto e_field = doc["e"];
+        if (has_field(e_field)) {
+            auto etype = e_field.get_string().value();
+            if (etype == "depthUpdate") {
+                handle_depth_update(doc, raw);
+                return;
+            }
+            if (etype == "kline") {
+                handle_kline(doc);
+                return;
+            }
         }
-        if (etype == "kline") {
-            handle_kline(doc);
-            return;
-        }
-    }
 
-    // bookTicker has no "e" field
-    auto u_field = doc["u"];
-    auto b_field = doc["b"];
-    if (!u_field.error() && !b_field.error()) {
-        handle_book_ticker(doc);
-    }
+        // bookTicker has no "e" field
+        const bool has_u = has_field(doc["u"]);
+        const bool has_b = has_field(doc["b"]);
+        if (has_u && has_b) handle_book_ticker(doc);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +276,7 @@ void BinanceAdapter::handle_depth_update(simdjson::ondemand::document& doc,
             awaiting_first_.erase(symbol);
         } else {
             auto pu_field = doc["pu"];
-            if (!pu_field.error()) {
+            if (has_field(pu_field)) {
                 int64_t prev_id = pu_field.get_int64().value();
                 if (prev_id != last_id) {
                     logger_->warn("[{}] {} sequence gap: pu={} expected={}",
@@ -474,67 +467,80 @@ net::awaitable<void> BinanceAdapter::sync_orderbook(std::string exchange_symbol)
         bool          broken     = false;
 
         for (auto& raw_json : buffered) {
-            simdjson::padded_string buf_padded(raw_json);
-            auto buf_doc = parser.iterate(buf_padded).value();
+            // Every buffered frame already had its ids read when it arrived,
+            // but the rest of it may still be bad. One that cannot be applied
+            // in full is a hole in the chain like any other -- and may have
+            // half-applied to the book -- so it breaks the replay.
+            try {
+                simdjson::padded_string buf_padded(raw_json);
+                auto buf_doc = parser.iterate(buf_padded).value();
 
-            auto e_field = buf_doc["e"];
-            if (e_field.error()) continue;
-            if (e_field.get_string().value() != "depthUpdate") continue;
-            if (buf_doc["s"].get_string().value() != exchange_symbol) continue;
+                auto e_field = buf_doc["e"];
+                if (!has_field(e_field)) continue;
+                if (e_field.get_string().value() != "depthUpdate") continue;
+                if (buf_doc["s"].get_string().value() != exchange_symbol) continue;
 
-            int64_t first_id = buf_doc["U"].get_int64().value();
-            int64_t final_id = buf_doc["u"].get_int64().value();
-            int64_t prev_id  = -1;
-            auto    pu_field = buf_doc["pu"];
-            if (!pu_field.error()) prev_id = pu_field.get_int64().value();
+                int64_t first_id = buf_doc["U"].get_int64().value();
+                int64_t final_id = buf_doc["u"].get_int64().value();
+                int64_t prev_id  = -1;
+                auto    pu_field = buf_doc["pu"];
+                if (has_field(pu_field)) prev_id = pu_field.get_int64().value();
 
-            if (final_id < join_id) continue; // wholly older than the snapshot
+                if (final_id < join_id) continue; // wholly older than the snapshot
 
-            if (!chained) {
-                if (first_id > join_id) {
-                    logger_->warn("[{}] {} buffer starts past the snapshot "
-                                  "(U={} > join={}), resyncing",
-                                  exchange_name_, exchange_symbol, first_id, join_id);
-                    get_metrics().inc_resync(exchange_name_,
-                                             ResyncReason::SnapshotTooOld);
-                    broken = true;
-                    break;
+                if (!chained) {
+                    if (first_id > join_id) {
+                        logger_->warn("[{}] {} buffer starts past the snapshot "
+                                      "(U={} > join={}), resyncing",
+                                      exchange_name_, exchange_symbol, first_id, join_id);
+                        get_metrics().inc_resync(exchange_name_,
+                                                 ResyncReason::SnapshotTooOld);
+                        broken = true;
+                        break;
+                    }
+                } else {
+                    bool contiguous = is_futures() ? (prev_id == chained_id)
+                                                   : (first_id == chained_id + 1);
+                    if (!contiguous) {
+                        logger_->warn("[{}] {} buffered events not contiguous "
+                                      "(U={} pu={} after u={}), resyncing",
+                                      exchange_name_, exchange_symbol,
+                                      first_id, prev_id, chained_id);
+                        get_metrics().inc_resync(exchange_name_,
+                                                 ResyncReason::SequenceGap);
+                        broken = true;
+                        break;
+                    }
                 }
-            } else {
-                bool contiguous = is_futures() ? (prev_id == chained_id)
-                                               : (first_id == chained_id + 1);
-                if (!contiguous) {
-                    logger_->warn("[{}] {} buffered events not contiguous "
-                                  "(U={} pu={} after u={}), resyncing",
-                                  exchange_name_, exchange_symbol,
-                                  first_id, prev_id, chained_id);
-                    get_metrics().inc_resync(exchange_name_,
-                                             ResyncReason::SequenceGap);
-                    broken = true;
-                    break;
-                }
-            }
 
-            auto& local_ob = orderbooks_[exchange_symbol];
-            for (auto arr : buf_doc["b"].get_array()) {
-                auto a = arr.get_array().value();
-                auto it = a.begin();
-                double price = std::stod(std::string((*it).get_string().value()));
-                ++it;
-                double qty   = std::stod(std::string((*it).get_string().value()));
-                local_ob.apply_bid(price, qty);
+                auto& local_ob = orderbooks_[exchange_symbol];
+                for (auto arr : buf_doc["b"].get_array()) {
+                    auto a = arr.get_array().value();
+                    auto it = a.begin();
+                    double price = std::stod(std::string((*it).get_string().value()));
+                    ++it;
+                    double qty   = std::stod(std::string((*it).get_string().value()));
+                    local_ob.apply_bid(price, qty);
+                }
+                for (auto arr : buf_doc["a"].get_array()) {
+                    auto a = arr.get_array().value();
+                    auto it = a.begin();
+                    double price = std::stod(std::string((*it).get_string().value()));
+                    ++it;
+                    double qty   = std::stod(std::string((*it).get_string().value()));
+                    local_ob.apply_ask(price, qty);
+                }
+                local_ob.sequence = final_id;
+                chained    = true;
+                chained_id = final_id;
+            } catch (const std::exception& e) {
+                logger_->warn("[{}] {} malformed buffered event ({}), resyncing",
+                              exchange_name_, exchange_symbol, e.what());
+                get_metrics().inc_parse_error(exchange_name_);
+                get_metrics().inc_resync(exchange_name_, ResyncReason::SequenceGap);
+                broken = true;
+                break;
             }
-            for (auto arr : buf_doc["a"].get_array()) {
-                auto a = arr.get_array().value();
-                auto it = a.begin();
-                double price = std::stod(std::string((*it).get_string().value()));
-                ++it;
-                double qty   = std::stod(std::string((*it).get_string().value()));
-                local_ob.apply_ask(price, qty);
-            }
-            local_ob.sequence = final_id;
-            chained    = true;
-            chained_id = final_id;
         }
 
         if (broken) {
@@ -566,8 +572,11 @@ net::awaitable<void> BinanceAdapter::sync_orderbook(std::string exchange_symbol)
         get_metrics().inc_resync(exchange_name_, ResyncReason::SnapshotFailed);
         logger_->error("[{}] sync_orderbook {} failed: {}",
                        exchange_name_, exchange_symbol, e.what());
-        syncing_.erase(exchange_symbol);
-
+        // The symbol stays in `syncing_` until the retry, exactly as on the
+        // replay-failure path: live diffs keep buffering instead of being
+        // applied to a book that no snapshot has seeded, and nothing is
+        // published for it until a snapshot succeeds. schedule_sync() resets
+        // the buffer when the retry fires.
         if (running_)
             net::co_spawn(ioc_, retry_sync(exchange_symbol), net::detached);
     }

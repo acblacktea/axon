@@ -180,6 +180,25 @@ TEST(WsConnection, AnswersPingsAutomatically) {
   EXPECT_TRUE(rec.messages.empty());
 }
 
+// The session watchdog probes a quiet stream with a ping; the pong has to be
+// counted, because it never reaches the handler as a message.
+TEST(WsConnection, SendsAPingAndCountsThePong) {
+  WsTestServer server(WsTestServer::Options{});
+  net::TlsContext ctx = trusting_context(server);
+
+  net::WsConnection conn;
+  Recorder rec;
+  EXPECT_FALSE(conn.send_ping()) << "nothing to ping before the socket is open";
+  conn.connect(config_for(server), &ctx);
+  ASSERT_TRUE(pump_until(conn, rec, [&] { return rec.opened; })) << conn.last_error();
+
+  ASSERT_TRUE(conn.send_ping());
+  ASSERT_TRUE(pump_until(conn, rec, [&] { return conn.stats().pongs_received > 0; }))
+      << "expected the server's pong";
+  EXPECT_EQ(conn.stats().pings_sent, 1u);
+  EXPECT_TRUE(rec.messages.empty());
+}
+
 TEST(WsConnection, DoesNotLoseAFrameSentWithTheHandshakeResponse) {
   // A server may put its first frame in the same segment as the 101. A client
   // that consumes the whole buffer instead of exactly the headers eats it, and

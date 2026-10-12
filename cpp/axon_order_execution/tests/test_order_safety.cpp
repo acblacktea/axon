@@ -340,8 +340,10 @@ class ScriptedRest : public axon::oms::ExchangeRest {
   std::vector<std::string> looked_up;
   bool hold_open_orders = false;
   std::vector<std::function<void()>> held;
+  int open_order_calls = 0;
 
   void get_open_orders(const std::string& currency, OrdersCallback cb) override {
+    ++open_order_calls;
     auto fire = [this, currency, cb] {
       const auto err = open_errors.count(currency) ? open_errors[currency] : std::string();
       cb(err.empty() ? open_by_currency[currency] : std::vector<Order>{}, err);
@@ -416,6 +418,34 @@ class ReconcilerTest : public ::testing::Test {
   ScriptedRest rest;
   std::unique_ptr<axon::oms::Reconciler> reconciler;
 };
+
+// Binance's user data stream delivers nothing for a moment after it opens. An
+// order placed in that window is seen by neither the feed nor the pass run the
+// instant the session went live -- only by a second pass once it has settled.
+TEST(ReconcilerSettle, ASecondPassRunsOnceTheStreamHasSettled) {
+  Config config;
+  config.reconciliation.enabled = true;
+  config.reconciliation.after_live_settle_seconds = 0.05;
+  config.fill_reconciliation.enabled = false;
+  config.portfolio.currencies = {"USDT"};
+  ExchangeConfig ex;
+  ex.name = "binance";
+  axon::oms::OrderStore store;
+  ScriptedRest rest;
+  axon::oms::Reconciler reconciler(config, ex, &rest, &store, axon::oms::ReconcilerCallbacks{});
+
+  reconciler.on_session_live();
+  reconciler.poll();
+  EXPECT_EQ(rest.open_order_calls, 1);
+  reconciler.poll();
+  EXPECT_EQ(rest.open_order_calls, 1) << "the normal interval applies until the settle time";
+  std::this_thread::sleep_for(60ms);
+  reconciler.poll();
+  EXPECT_EQ(rest.open_order_calls, 2);
+  std::this_thread::sleep_for(60ms);
+  reconciler.poll();
+  EXPECT_EQ(rest.open_order_calls, 2) << "one settle pass, not a new cadence";
+}
 
 TEST_F(ReconcilerTest, AnOrderThatFilledUnseenIsResolvedToFilled) {
   store.update_order(open_order("A"));

@@ -8,6 +8,7 @@
 #include <string>
 #include <unordered_map>
 
+#include <simdjson.h>
 #include <spdlog/spdlog.h>
 
 #include "axon/market_data/metrics.h"
@@ -16,6 +17,23 @@
 namespace axon::market_data {
 
 using EventCallback = std::function<void(const MarketDataEvent&)>;
+
+// True if an optional field is present, false if it is absent, and throws if
+// the lookup failed for any other reason.
+//
+// simdjson On-Demand parses lazily: iterate() rejects almost nothing, and a
+// truncated or garbled frame only shows up as an error from the first lookup
+// that walks into the bad bytes. That error comes out of the same error() call
+// as "no such field" -- and some of those errors (INCOMPLETE_ARRAY_OR_OBJECT,
+// TAPE_ERROR) are fatal: touching the document again afterwards is undefined
+// behaviour. So "absent" is the only error a handler may continue past.
+template <class T>
+bool has_field(const simdjson::simdjson_result<T>& r) {
+    const auto ec = r.error();
+    if (ec == simdjson::SUCCESS)       return true;
+    if (ec == simdjson::NO_SUCH_FIELD) return false;
+    throw simdjson::simdjson_error(ec);
+}
 
 // Common interface for all exchange adapters.
 class Adapter {
@@ -109,6 +127,22 @@ public:
     }
 
 protected:
+
+    // Runs one frame's handler. Anything that stops a frame being read in
+    // full -- invalid JSON, a required field missing or of the wrong type, a
+    // number that does not parse -- drops that frame and counts it. It must
+    // never escape: the caller is the WebSocket read loop, and an exception
+    // there tears down the connection and every topic on it over one bad
+    // frame.
+    template <class Handler>
+    void handle_frame(Handler&& handler) {
+        try {
+            handler();
+        } catch (const std::exception& e) {
+            get_metrics().inc_parse_error(exchange_name_);
+            logger_->warn("[{}] dropped malformed frame: {}", exchange_name_, e.what());
+        }
+    }
 
     void emit(DataType dt, const std::string& exchange_sym,
               const std::string& event_type, EventData data) {

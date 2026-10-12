@@ -17,11 +17,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 
 #include "axon/config.h"
 #include "axon/core/decimal.h"
 #include "axon/ems/ems_service.h"
+#include "axon/ems/rate_limiter.h"
 #include "axon/models/order.h"
 #include "axon/exchanges/binance/binance_builder.h"
 #include "axon/exchanges/bybit/bybit_builder.h"
@@ -113,6 +115,21 @@ struct ExchangeOps {
   OrderResult (*interpret_reply)(std::string_view payload,
                                  const models::OrderRequest& request,
                                  ExchangeState& state);
+
+  // The exchange's published order-entry limits, used unless the config gives
+  // the account's own. Approximations of rules that are sometimes per symbol
+  // or credit-based; each exchange's file says what it simplified.
+  std::span<const RateLimitRule> default_rate_limits;
+
+  // Reads what a reply -- success or error -- says about the account's
+  // usage, and whether it says to stop. Null for an exchange that reports
+  // nothing; local counting still applies.
+  void (*read_rate_limits)(std::string_view payload, ExchangeState& state,
+                           std::int64_t now_ms, RateLimitFeedback& out);
+
+  // Applies the exchange's configuration to its builder once, at startup --
+  // self-trade prevention today. Null for an exchange with nothing to set.
+  void (*configure)(ExchangeState& state, const ExchangeConfig& config);
 };
 
 // The exchange this exchange name maps to, or nullptr if this build has no

@@ -156,42 +156,38 @@ net::awaitable<void> BybitAdapter::subscribe_topics() {
 // ---------------------------------------------------------------------------
 
 void BybitAdapter::handle_message(std::string_view raw) {
-    simdjson::padded_string padded(raw);
-    auto doc_result = json_parser_.iterate(padded);
-    if (doc_result.error()) {
-        get_metrics().inc_parse_error(exchange_name_);
-        logger_->warn("[{}] JSON parse error", exchange_name_);
-        return;
-    }
-    auto doc = std::move(doc_result).value();
+    handle_frame([&] {
+        simdjson::padded_string padded(raw);
+        auto doc = json_parser_.iterate(padded).value();
 
-    auto topic_field = doc["topic"];
-    if (topic_field.error()) {
-        // Control response: subscribe ack / pong
-        auto success = doc["success"];
-        if (!success.error() && !success.get_bool().value()) {
-            auto msg = doc["ret_msg"];
-            logger_->error("[{}] subscription failed: {}", exchange_name_,
-                           msg.error() ? "unknown" : msg.get_string().value());
+        auto topic_field = doc["topic"];
+        if (!has_field(topic_field)) {
+            // Control response: subscribe ack / pong
+            auto success = doc["success"];
+            if (has_field(success) && !success.get_bool().value()) {
+                auto msg = doc["ret_msg"];
+                logger_->error("[{}] subscription failed: {}", exchange_name_,
+                               has_field(msg) ? msg.get_string().value() : "unknown");
+            }
+            return;
         }
-        return;
-    }
 
-    // Topic layout: orderbook.{depth}.{symbol} or kline.{interval}.{symbol}
-    std::string topic(topic_field.get_string().value());
-    auto first = topic.find('.');
-    if (first == std::string::npos) return;
-    auto second = topic.find('.', first + 1);
-    if (second == std::string::npos) return;
+        // Topic layout: orderbook.{depth}.{symbol} or kline.{interval}.{symbol}
+        std::string topic(topic_field.get_string().value());
+        auto first = topic.find('.');
+        if (first == std::string::npos) return;
+        auto second = topic.find('.', first + 1);
+        if (second == std::string::npos) return;
 
-    std::string kind   = topic.substr(0, first);
-    std::string middle = topic.substr(first + 1, second - first - 1);
-    std::string symbol = topic.substr(second + 1);
+        std::string kind   = topic.substr(0, first);
+        std::string middle = topic.substr(first + 1, second - first - 1);
+        std::string symbol = topic.substr(second + 1);
 
-    if (kind == "orderbook")
-        handle_orderbook(doc, symbol, middle == "1");
-    else if (kind == "kline")
-        handle_kline(doc, symbol);
+        if (kind == "orderbook")
+            handle_orderbook(doc, symbol, middle == "1");
+        else if (kind == "kline")
+            handle_kline(doc, symbol);
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -201,16 +197,16 @@ void BybitAdapter::handle_message(std::string_view raw) {
 void BybitAdapter::handle_orderbook(simdjson::ondemand::document& doc,
                                     const std::string& symbol, bool is_bbo) {
     auto type_field = doc["type"];
-    if (type_field.error()) return;
+    if (!has_field(type_field)) return;
     std::string type(type_field.get_string().value());
     const bool is_snapshot = (type == "snapshot");
 
     int64_t event_time = 0;
     auto ts_field = doc["ts"];
-    if (!ts_field.error()) event_time = ts_field.get_int64().value();
+    if (has_field(ts_field)) event_time = ts_field.get_int64().value();
 
     auto data = doc["data"].get_object();
-    if (data.error()) return;
+    if (!has_field(data)) return;
     auto obj = data.value();
 
     std::vector<std::pair<double, double>> bid_updates, ask_updates;
@@ -233,7 +229,7 @@ void BybitAdapter::handle_orderbook(simdjson::ondemand::document& doc,
 
     int64_t update_id = 0;
     auto u_field = obj["u"];
-    if (!u_field.error()) update_id = u_field.get_int64().value();
+    if (has_field(u_field)) update_id = u_field.get_int64().value();
 
     // The level-1 stream feeds TickerData: a delta omits the side that did not
     // change, so the last known best price/qty is carried forward.
@@ -297,7 +293,7 @@ void BybitAdapter::handle_orderbook(simdjson::ondemand::document& doc,
 void BybitAdapter::handle_kline(simdjson::ondemand::document& doc,
                                 const std::string& symbol) {
     auto data = doc["data"].get_array();
-    if (data.error()) return;
+    if (!has_field(data)) return;
 
     for (auto entry : data.value()) {
         auto obj = entry.get_object().value();

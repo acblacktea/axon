@@ -61,7 +61,7 @@ TEST(OkxWsOrderEntry, PlaceWrapsTheRestBodyVerbatim) {
   axon::exchanges::okx::OkxBuilder builder;
   char body[axon::exchanges::okx::kMaxRequestBytes];
   const std::size_t body_len =
-      axon::exchanges::okx::OkxBuilder::place_order_body(body, sizeof(body), req);
+      axon::exchanges::okx::OkxBuilder{}.place_order_body(body, sizeof(body), req);
   ASSERT_GT(body_len, 0u);
 
   char buf[axon::exchanges::okx::kMaxRequestBytes];
@@ -123,7 +123,7 @@ TEST(BybitWsOrderEntry, PlaceCarriesTheHeaderAndWrapsTheRestBody) {
 
   char body[axon::exchanges::bybit::kMaxRequestBytes];
   const std::size_t body_len =
-      axon::exchanges::bybit::BybitBuilder::place_order_body(body, sizeof(body), req);
+      axon::exchanges::bybit::BybitBuilder{}.place_order_body(body, sizeof(body), req);
   ASSERT_GT(body_len, 0u);
 
   axon::exchanges::bybit::BybitBuilder builder;

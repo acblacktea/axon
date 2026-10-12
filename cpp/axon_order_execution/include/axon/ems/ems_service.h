@@ -47,6 +47,7 @@
 #include <unordered_set>
 
 #include "axon/config.h"
+#include "axon/ems/rate_limiter.h"
 #include "axon/models/order.h"
 #include "axon/net/http_client.h"
 #include "axon/risk/risk_manager.h"
@@ -118,6 +119,11 @@ class EmsService {
 
   std::size_t in_flight() const noexcept { return pending_.size(); }
 
+  // How close `exchange` is to its order-entry rate limit: the busiest
+  // window's usage as a fraction of its limit. 0 for an exchange nothing has
+  // been sent to.
+  double rate_limit_utilisation(const std::string& exchange);
+
  private:
   struct Pending {
     bool is_place = false;
@@ -158,6 +164,14 @@ class EmsService {
 
   const ExchangeConfig* exchange_config(const std::string& name) const;
 
+  // The exchange's rate limiter, built on first use from the config's
+  // rate_limits or, failing that, the exchange's published defaults.
+  RateLimiter& limiter(const std::string& exchange, const ExchangeOps& ops);
+  // Refuses locally when the exchange's budget is spent. True = refused, with
+  // `why` filled in.
+  bool rate_limited(const std::string& exchange, const ExchangeOps& ops,
+                    RateLimiter::Kind kind, std::string& why);
+
   Config config_;
   net::HttpClient* http_ = nullptr;
   std::map<std::string, oms::ExchangeSession*> sessions_;
@@ -170,6 +184,7 @@ class EmsService {
   std::unique_ptr<ExchangeState> exchanges_;
   // Keyed by "exchange:rpc_id" so two exchanges cannot collide on an id.
   std::map<std::string, Pending> pending_;
+  std::map<std::string, RateLimiter> limiters_;
 
   // internal_order_ids handed to an exchange, so a resubmission is refused here
   // rather than becoming a second order. Removed again when the exchange

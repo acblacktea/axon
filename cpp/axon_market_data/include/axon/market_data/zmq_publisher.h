@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <memory>
 
 #include <zmq.hpp>
@@ -27,6 +28,10 @@ public:
     void publish(const MarketDataEvent& event);
 
 private:
+    // Sends one frame without blocking. False if it did not fit some
+    // subscriber's queue (it still went to every subscriber with room).
+    bool send_frame(std::string_view data, zmq::send_flags flags);
+
     std::string                  address_;
     std::shared_ptr<spdlog::logger> logger_;
     std::unique_ptr<zmq::context_t> ctx_;

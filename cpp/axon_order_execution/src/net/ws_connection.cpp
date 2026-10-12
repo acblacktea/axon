@@ -132,6 +132,17 @@ bool WsConnection::send_binary(const void* data, std::size_t len) {
   return true;
 }
 
+bool WsConnection::send_ping() {
+  if (state_ != WsConnectionState::kOpen) {
+    return false;
+  }
+  if (!queue_frame(WsOpcode::kPing, nullptr, 0)) {
+    return false;
+  }
+  ++stats_.pings_sent;
+  return true;
+}
+
 void WsConnection::close(WsCloseCode code, std::string_view reason) {
   if (state_ != WsConnectionState::kOpen) {
     return;

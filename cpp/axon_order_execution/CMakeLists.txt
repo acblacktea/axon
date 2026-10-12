@@ -182,6 +182,7 @@ add_library(axon_app
   src/util/metrics.cpp
   src/ems/ems_service.cpp
   src/ems/exchange_ops.cpp
+  src/ems/rate_limiter.cpp
   src/exchanges/deribit/deribit_ems.cpp
   src/exchanges/okx/okx_ems.cpp
   src/exchanges/bybit/bybit_ems.cpp

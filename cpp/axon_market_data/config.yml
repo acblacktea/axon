@@ -1,6 +1,14 @@
 zmq:
   pub_address: "tcp://*:5558"
 
+# Same-host transport, next to ZMQ: strategies on this machine read the feed
+# from /dev/shm/<name> (axon/market_data/shm_feed.h); ones on other machines
+# use ZMQ. Same events on both.
+shm:
+  enabled: true
+  name: axon_mds
+  capacity_mb: 64               # ring size, a power of two
+
 logging:
   file: "logs/axon_market_data.log"   # rotated daily -> logs/axon_market_data_YYYY-MM-DD.log
   level: info                   # trace / debug / info / warn / error / critical

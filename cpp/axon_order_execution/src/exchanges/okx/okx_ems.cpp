@@ -77,6 +77,39 @@ OrderResult interpret_reply(std::string_view payload,
   return OrderResult{true, std::nullopt, {}};
 }
 
+// OKX limits order placement to 60 requests per 2 seconds -- per instrument,
+// and 1000 per 2 seconds per sub-account across all of them. Counting every
+// instrument against the per-instrument figure is stricter than OKX is, and
+// stays correct for an engine trading a handful of instruments.
+constexpr RateLimitRule kDefaultRateLimits[] = {{2.0, 60}};
+
+// OKX reports no usage, only the refusal: code 50011 ("rate limit reached")
+// or 50061 (sub-account limit), at the top level or per order in sCode.
+bool is_throttle_code(std::string_view code) { return code == "50011" || code == "50061"; }
+
+void read_rate_limits(std::string_view payload, ExchangeState& state, std::int64_t,
+                      RateLimitFeedback& out) {
+  auto root = state.reply_doc.parse_copy(payload);
+  if (!root.has_value()) {
+    return;
+  }
+  if (is_throttle_code((*root)["code"].as_string().value_or("0"))) {
+    out.throttled = true;
+    return;
+  }
+  if (auto data = (*root)["data"].as_array(); data.has_value()) {
+    data->for_each_object([&](exchanges::Object& entry) {
+      if (is_throttle_code(entry["sCode"].as_string().value_or("0"))) {
+        out.throttled = true;
+      }
+    });
+  }
+}
+
+void configure(ExchangeState& state, const ExchangeConfig& config) {
+  state.okx.set_self_trade_prevention(config.self_trade_prevention);
+}
+
 }  // namespace
 
 const ExchangeOps& ems_ops() {
@@ -85,6 +118,7 @@ const ExchangeOps& ems_ops() {
       /*own_trade_connection=*/false,  // orders ride the private stream
       /*needs_symbol=*/true,
       build_place, build_cancel, build_modify, interpret_reply,
+      kDefaultRateLimits, read_rate_limits, configure,
   };
   return kOps;
 }

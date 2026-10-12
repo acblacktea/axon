@@ -22,6 +22,8 @@ add_executable(axon_tests
   test_ws_order_entry.cpp
   test_ws_connection.cpp
   test_client_order_id.cpp
+  test_session_liveness.cpp
+  test_http_client.cpp
 )
 
 target_include_directories(axon_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -54,6 +56,8 @@ add_executable(axon_app_tests
   test_order_safety.cpp
   test_risk_manager.cpp
   test_oms_service.cpp
+  test_rate_limiter.cpp
+  test_risk_controls.cpp
 )
 target_include_directories(axon_app_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(axon_app_tests PRIVATE

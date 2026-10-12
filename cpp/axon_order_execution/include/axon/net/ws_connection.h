@@ -100,6 +100,8 @@ struct WsConnectionStats {
   std::uint64_t bytes_sent = 0;
   std::uint64_t pings_received = 0;
   std::uint64_t pongs_sent = 0;
+  std::uint64_t pings_sent = 0;
+  std::uint64_t pongs_received = 0;
   // Non-zero means the send buffer filled: the exchange or the network is not
   // keeping up and orders are being delayed.
   std::uint64_t send_backpressure_events = 0;
@@ -131,6 +133,11 @@ class WsConnection {
   // retry or drop. Never blocks and never grows the buffer.
   bool send_text(std::string_view text);
   bool send_binary(const void* data, std::size_t len);
+
+  // Queues a ping control frame. The peer must answer with a pong (RFC 6455
+  // 5.5.2), so it is a liveness probe that costs the exchange nothing and
+  // works on a stream that otherwise has nothing to say.
+  bool send_ping();
 
   // Sends close_notify and begins an orderly shutdown.
   void close(WsCloseCode code = WsCloseCode::kNormal,
@@ -296,6 +303,7 @@ bool WsConnection::drive_open(Handler& handler) {
       }
 
       case WsEvent::kPong:
+        ++stats_.pongs_received;
         rx_.consume(frame_size);
         break;
 

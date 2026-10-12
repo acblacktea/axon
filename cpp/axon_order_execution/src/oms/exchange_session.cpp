@@ -20,6 +20,8 @@ auto& log() {
 }
 
 using detail::monotonic_seconds;
+using detail::check_liveness;
+using detail::Liveness;
 
 double jitter() {
   static thread_local std::mt19937_64 rng{std::random_device{}()};
@@ -285,16 +287,33 @@ void ExchangeSession::poll() {
     }
   }
 
+  // Pings and pongs never reach on_message, but they prove the peer is there.
+  const auto& stats = connection_.stats();
+  const std::uint64_t control_frames = stats.pings_received + stats.pongs_received;
+  if (control_frames != control_frames_seen_) {
+    control_frames_seen_ = control_frames;
+    last_activity_ = now_seconds();
+  }
+
   // Liveness. A socket that is open but silent for several heartbeat periods
   // is a half-open connection: the peer is gone and TCP has not noticed. This
   // is the case keepalive alone is too slow to catch.
   if (state_ == SessionState::kLive) {
-    const double silence = now_seconds() - last_activity_;
-    if (silence > ws_config_.heartbeat_interval_seconds * 3.0) {
-      util::get_metrics().inc_ws_heartbeat_miss(exchange_.name);
-      AXON_LOG_WARN(log(), "[{}] silent for {:.0f}s, reconnecting",
-                      exchange_.name, silence);
-      enter_backoff();
+    const double now = now_seconds();
+    switch (check_liveness(now, last_activity_, last_probe_,
+                           ws_config_.heartbeat_interval_seconds)) {
+      case Liveness::kFine:
+        break;
+      case Liveness::kProbe:
+        last_probe_ = now;
+        static_cast<void>(connection_.send_ping());
+        break;
+      case Liveness::kDead:
+        util::get_metrics().inc_ws_heartbeat_miss(exchange_.name);
+        AXON_LOG_WARN(log(), "[{}] silent for {:.0f}s despite pings, reconnecting",
+                      exchange_.name, now - last_activity_);
+        enter_backoff();
+        break;
     }
   }
 }

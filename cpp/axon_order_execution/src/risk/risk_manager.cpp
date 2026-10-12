@@ -31,6 +31,7 @@ const char* to_string(KillSource source) noexcept {
     case KillSource::kOperator: return "operator";
     case KillSource::kSignal: return "signal";
     case KillSource::kFile: return "file";
+    case KillSource::kLoss: return "loss";
   }
   return "?";
 }
@@ -130,7 +131,8 @@ std::optional<RiskRejection> RiskManager::check_new_order(const std::string& exc
                                                           const models::OrderRequest& request,
                                                           double now_seconds) {
   return check(exchange, request.instrument, request.side, request.order_type,
-               request.amount, request.price, request.strategy_id.value_or(std::string()),
+               request.amount, request.price, request.post_only,
+               request.strategy_id.value_or(std::string()),
                /*count_rate=*/true, /*replacing_key=*/{}, now_seconds);
 }
 
@@ -145,7 +147,7 @@ std::optional<RiskRejection> RiskManager::check_modify(const std::string& exchan
   const core::Qty remaining = new_amount - existing.filled_amount;
   const std::optional<core::Price> new_price = price.has_value() ? price : existing.price;
   return check(exchange, existing.instrument, existing.side, existing.order_type,
-               remaining.raw() > 0 ? remaining : core::Qty{}, new_price,
+               remaining.raw() > 0 ? remaining : core::Qty{}, new_price, existing.post_only,
                existing.strategy_id.value_or(std::string()), /*count_rate=*/false,
                order_key(exchange, existing), now_seconds);
 }
@@ -153,11 +155,16 @@ std::optional<RiskRejection> RiskManager::check_modify(const std::string& exchan
 std::optional<RiskRejection> RiskManager::check(
     const std::string& exchange, const std::string& instrument, models::OrderSide side,
     models::OrderType type, core::Qty quantity, std::optional<core::Price> price,
-    const std::string& strategy, bool count_rate, const std::string& replacing_key,
-    double now) {
+    bool post_only, const std::string& strategy, bool count_rate,
+    const std::string& replacing_key, double now) {
   // The kill switch is not a limit and is not covered by `enabled`.
   if (kill_engaged_) {
     return RiskRejection{"kill_switch", "kill switch engaged: " + kill_reason_};
+  }
+  // Nor is a blind exchange: without its feed, no limit below has a true
+  // position to work from.
+  if (const auto it = halted_.find(exchange); it != halted_.end()) {
+    return RiskRejection{"exchange_down", it->second};
   }
   if (!config_.enabled) {
     return std::nullopt;
@@ -250,6 +257,52 @@ std::optional<RiskRejection> RiskManager::check(
     }
   }
 
+  // --- self-trade --------------------------------------------------------------
+  // A post-only order never takes, so it can never trade with our own.
+  if (config_.self_trade_prevention && !post_only) {
+    if (auto refused =
+            check_self_trade(exchange, instrument, side, is_limit ? price : std::nullopt, now)) {
+      return refused;
+    }
+  }
+
+  return std::nullopt;
+}
+
+// Would this order trade against one of our own resting on the other side?
+// A limit order does if its price reaches ours. A market order takes the best
+// price on the book, which we cannot see from here: ours is treated as the
+// best when it is at or through the reference price -- and when there is no
+// fresh reference to compare with, any of ours counts. Fail closed.
+std::optional<RiskRejection> RiskManager::check_self_trade(
+    const std::string& exchange, const std::string& instrument, models::OrderSide side,
+    std::optional<core::Price> limit_price, double now) const {
+  const bool buy = side == models::OrderSide::kBuy;
+  const auto reference = limit_price.has_value() ? std::nullopt
+                                                 : fresh_reference(exchange, instrument, now);
+  // Only the other side can be traded against -- which also leaves out the
+  // order an amend is changing.
+  for (const auto& [_, w] : working_) {
+    if (w.side == side || w.exchange != exchange || w.instrument != instrument ||
+        !w.price.has_value()) {
+      continue;
+    }
+    bool crosses = false;
+    if (limit_price.has_value()) {
+      crosses = buy ? *limit_price >= *w.price : *limit_price <= *w.price;
+    } else if (reference.has_value()) {
+      crosses = buy ? *w.price <= *reference : *w.price >= *reference;
+    } else {
+      crosses = true;
+    }
+    if (crosses) {
+      return RiskRejection{
+          "self_trade", std::string(buy ? "buy" : "sell") +
+                            (limit_price ? " at " + limit_price->to_string() : std::string(" at market")) +
+                            " would trade against our own " + (buy ? "sell" : "buy") + " at " +
+                            w.price->to_string() + " on " + instrument};
+    }
+  }
   return std::nullopt;
 }
 
@@ -261,6 +314,9 @@ void RiskManager::on_order_sent(const std::string& exchange,
   w.instrument = request.instrument;
   w.side = request.side;
   w.remaining = request.amount;
+  if (request.order_type == models::OrderType::kLimit) {
+    w.price = request.price;
+  }
   working_[key(exchange, request.internal_order_id)] = std::move(w);
   if (config_.max_orders_per_strategy_per_second > 0) {
     sends_[request.strategy_id.value_or(std::string())].push_back(now_seconds);
@@ -284,12 +340,32 @@ void RiskManager::on_order_update(const models::Order& order) {
   w.instrument = order.instrument;
   w.side = order.side;
   w.remaining = remaining;
+  if (order.order_type == models::OrderType::kLimit) {
+    w.price = order.price;
+  }
   working_[k] = std::move(w);
 }
 
 void RiskManager::on_fill(const models::Fill& fill) {
-  auto& pos = positions_[key(fill.exchange, fill.instrument)];
+  const auto k = key(fill.exchange, fill.instrument);
+  auto& pos = positions_[k];
   pos = pos + signed_qty(fill.side, fill.amount);
+
+  // PnL counts this session's fills only. A recovered fill from before the
+  // engine started is already in the position it started with.
+  if (!pnl_tracked(fill.exchange) || fill.timestamp.millis() < pnl_session_start_ms_) {
+    return;
+  }
+  auto& book = pnl_[k];
+  const double qty = signed_qty(fill.side, fill.amount).to_double();
+  book.fill_qty += qty;
+  book.cash -= qty * fill.price.to_double();
+  // A fee in a dollar stablecoin is a cost in the quote currency. One charged
+  // in anything else (BNB) cannot be valued here and is left out.
+  if (fill.fee_currency == "USDT" || fill.fee_currency == "USDC" ||
+      fill.fee_currency == "USD") {
+    book.cash -= fill.fee.to_double();
+  }
 }
 
 void RiskManager::on_positions(const std::string& exchange,
@@ -307,7 +383,115 @@ void RiskManager::update_reference_price(const std::string& exchange,
                                          const std::string& instrument, core::Price price,
                                          double now_seconds) {
   if (price.raw() <= 0) return;
-  references_[key(exchange, instrument)] = Reference{price, now_seconds};
+  const auto k = key(exchange, instrument);
+  references_[k] = Reference{price, now_seconds};
+  if (pnl_tracked(exchange)) {
+    auto& book = pnl_[k];
+    if (!book.start_mark.has_value()) {
+      book.start_mark = price.to_double();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+bool RiskManager::pnl_tracked(const std::string& exchange) const {
+  for (const auto& e : config_.pnl_exclude_exchanges) {
+    if (e == exchange) return false;
+  }
+  return true;
+}
+
+void RiskManager::start_pnl_session(std::int64_t wall_ms) {
+  pnl_session_start_ms_ = wall_ms;
+  pnl_day_ = wall_ms / 86'400'000;
+  loss_tripped_ = false;
+  pnl_.clear();
+}
+
+void RiskManager::on_wall_clock(std::int64_t wall_ms) {
+  const std::int64_t day = wall_ms / 86'400'000;
+  if (pnl_day_ < 0 || day == pnl_day_) {
+    return;
+  }
+  // A new day: what is held now is the new starting position, valued from
+  // the latest reference price.
+  pnl_session_start_ms_ = day * 86'400'000;
+  pnl_day_ = day;
+  loss_tripped_ = false;
+  for (auto& [k, book] : pnl_) {
+    book.cash = 0.0;
+    book.fill_qty = 0.0;
+    const auto ref = references_.find(k);
+    book.start_mark = ref == references_.end() ? std::nullopt
+                                               : std::optional<double>(ref->second.price.to_double());
+  }
+  AXON_LOG_INFO(log(), "new PnL session for UTC day {}", day);
+}
+
+RiskManager::Pnl RiskManager::pnl(double now_seconds) const {
+  Pnl out;
+  for (const auto& [k, book] : pnl_) {
+    const auto colon = k.find(':');
+    const std::string exchange = k.substr(0, colon);
+    const std::string instrument = k.substr(colon + 1);
+    const double held = position(exchange, instrument).to_double();
+    // What was held when the session started: today's fills taken back out.
+    const double held_at_start = held - book.fill_qty;
+    const auto mark = fresh_reference(exchange, instrument, now_seconds);
+    const bool needs_mark = held != 0.0;
+    const bool needs_start_mark = held_at_start != 0.0;
+    if ((needs_mark && !mark.has_value()) || (needs_start_mark && !book.start_mark.has_value())) {
+      ++out.unvalued;
+      continue;
+    }
+    double value = book.cash;
+    if (needs_mark) value += held * mark->to_double();
+    if (needs_start_mark) value -= held_at_start * *book.start_mark;
+    out.total += value;
+  }
+  return out;
+}
+
+void RiskManager::check_loss(double now_seconds) {
+  if (!config_.max_loss.has_value() || loss_tripped_) {
+    return;
+  }
+  const Pnl p = pnl(now_seconds);
+  if (p.total >= -*config_.max_loss) {
+    return;
+  }
+  loss_tripped_ = true;
+  char reason[160];
+  std::snprintf(reason, sizeof reason, "PnL %.2f breached max_loss %.2f%s", p.total,
+                *config_.max_loss,
+                p.unvalued > 0 ? " (some positions could not be valued)" : "");
+  engage_kill_switch(KillSource::kLoss, reason);
+}
+
+// ---------------------------------------------------------------------------
+void RiskManager::observe_exchange_link(const std::string& exchange, bool feed_live,
+                                        double now_seconds) {
+  if (feed_live) {
+    down_since_.erase(exchange);
+    if (const auto it = halted_.find(exchange); it != halted_.end()) {
+      AXON_LOG_WARN(log(), "[{}] private feed is back; new orders allowed again", exchange);
+      halted_.erase(it);
+    }
+    return;
+  }
+  if (config_.exchange_down_halt_seconds <= 0.0 || halted_.count(exchange) != 0) {
+    return;
+  }
+  const double since = down_since_.emplace(exchange, now_seconds).first->second;
+  if (now_seconds - since < config_.exchange_down_halt_seconds) {
+    return;
+  }
+  char reason[160];
+  std::snprintf(reason, sizeof reason,
+                "%s private feed down for %.0fs: fills cannot be seen, new orders halted",
+                exchange.c_str(), now_seconds - since);
+  AXON_LOG_ERROR(log(), "[{}] {}", exchange, reason);
+  halted_[exchange] = reason;
 }
 
 // ---------------------------------------------------------------------------

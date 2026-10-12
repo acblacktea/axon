@@ -15,8 +15,16 @@
 #include <vector>
 
 #include "axon/core/decimal.h"
+#include "axon/models/enums.h"
 
 namespace axon {
+
+// One of an exchange's request-rate windows: at most `limit` order-entry
+// requests in any `window_seconds`.
+struct RateLimitRule {
+  double window_seconds = 1.0;
+  int limit = 0;
+};
 
 struct ExchangeConfig {
   std::string name;
@@ -24,6 +32,16 @@ struct ExchangeConfig {
   std::string api_key;
   std::string api_secret;
   std::string passphrase;  // OKX only
+  // The exchange's order-entry rate windows. Empty = the exchange's published
+  // defaults (see each exchanges/<x>/<x>_ems.cpp). Set them when the account
+  // has a different tier.
+  std::vector<RateLimitRule> rate_limits;
+  // Sent with every new order where the exchange takes it per order. Cancel
+  // the TAKER by default: the order that would trade against our own resting
+  // one is the one refused -- the same rule the risk layer applies before
+  // sending, so this only catches what that check could not see.
+  models::SelfTradePrevention self_trade_prevention =
+      models::SelfTradePrevention::kCancelTaker;
 
   bool is_testnet() const noexcept { return env == "testnet"; }
 };
@@ -31,6 +49,11 @@ struct ExchangeConfig {
 struct ReconciliationConfig {
   bool enabled = true;
   int interval_seconds = 30;
+  // A session that has just come up is reconciled at once, and again this
+  // long after: an exchange may not deliver events for a moment after the
+  // socket opens (Binance's user data stream does not), and an order placed
+  // in that window would otherwise wait a full interval to be seen.
+  double after_live_settle_seconds = 3.0;
 };
 
 struct FillReconciliationConfig {
@@ -152,6 +175,25 @@ struct RiskConfig {
   std::string kill_switch_file;
   // Cancel every working order when the kill switch engages.
   bool cancel_all_on_kill = true;
+
+  // Engage the kill switch when profit and loss falls below -max_loss. Counted
+  // from engine start, and from 00:00 UTC each day after: fills at their trade
+  // price, open positions at the reference price, and the position held at
+  // the start valued from the first reference price seen. In each
+  // instrument's quote currency, summed -- meaningful for linear contracts
+  // quoted in one dollar stablecoin, which is why Deribit (inverse and
+  // options) is excluded by default. Unset = no loss limit.
+  std::optional<double> max_loss;
+  std::vector<std::string> pnl_exclude_exchanges{"deribit"};
+
+  // Refuse an order that would trade against one of our own working orders.
+  // Post-only orders are exempt: the exchange never lets them take.
+  bool self_trade_prevention = true;
+
+  // Stop new orders to an exchange whose private feed has been down this
+  // long: fills it sends while we cannot hear them would leave every
+  // position check working from a stale position. 0 = never.
+  double exchange_down_halt_seconds = 5.0;
 };
 
 struct Config {

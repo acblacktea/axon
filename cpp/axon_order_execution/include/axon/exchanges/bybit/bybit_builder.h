@@ -63,6 +63,9 @@ class BybitBuilder {
   explicit BybitBuilder(std::int64_t first_req_id = 1) noexcept
       : next_id_(first_req_id) {}
 
+  // Sent as smpType on every new order.
+  void set_self_trade_prevention(models::SelfTradePrevention stp) noexcept { stp_ = stp; }
+
   // --- WebSocket ---------------------------------------------------------
 
   // {"req_id":"N","op":"auth","args":[key, expires, signature]}
@@ -122,8 +125,8 @@ class BybitBuilder {
   // WebSocket requests above, and it is kept as a separate builder so those
   // three do not each restate the field mapping.
 
-  static std::size_t place_order_body(char* out, std::size_t cap,
-                                      const models::OrderRequest& req) noexcept;
+  std::size_t place_order_body(char* out, std::size_t cap,
+                               const models::OrderRequest& req) const noexcept;
 
   static std::size_t cancel_order_body(char* out, std::size_t cap,
                                        std::string_view symbol,
@@ -136,6 +139,7 @@ class BybitBuilder {
                                       std::optional<core::Price> price) noexcept;
 
  private:
+  models::SelfTradePrevention stp_ = models::SelfTradePrevention::kExchangeDefault;
   std::int64_t next_id() noexcept { return next_id_++; }
   std::int64_t next_id_ = 1;
 };

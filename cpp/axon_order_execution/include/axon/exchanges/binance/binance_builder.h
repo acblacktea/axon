@@ -64,6 +64,9 @@ class BinanceBuilder {
  public:
   explicit BinanceBuilder(std::int64_t first_id = 1) noexcept : next_id_(first_id) {}
 
+  // Sent as selfTradePreventionMode on every order.place.
+  void set_self_trade_prevention(models::SelfTradePrevention stp) noexcept { stp_ = stp; }
+
   // --- WebSocket order entry (the ws-fapi endpoint) ----------------------
   //
   // {"id":"<id>","method":"order.place","params":{...,"signature":"<hex>"}}
@@ -103,6 +106,7 @@ class BinanceBuilder {
   std::int64_t peek_next_id() const noexcept { return next_id_; }
 
  private:
+  models::SelfTradePrevention stp_ = models::SelfTradePrevention::kExchangeDefault;
   // ws-fapi correlates a reply by `id`. Unlike REST, where nothing needs
   // correlating because the response comes back on the same HTTP exchange.
   std::int64_t next_id() noexcept { return next_id_++; }

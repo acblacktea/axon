@@ -10,10 +10,15 @@
 // order it would become):
 //
 //   kill switch        while engaged, nothing new goes out (cancels still do)
+//   exchange down      the exchange's private feed has been down too long
 //   rate               orders per strategy per second
 //   order size         quantity, and notional = |price x quantity|
 //   price deviation    a limit price too far from the reference price
 //   position           worst-case net position if every working order filled
+//   self-trade         the order would trade against one of our own
+//
+// And continuously, outside any one order: PROFIT AND LOSS. Below -max_loss
+// the kill switch engages by itself (KillSource::kLoss).
 //
 // POSITION is the one that needs state, and it is computed from three sources
 // so that no single lagging one can let an order through:
@@ -57,7 +62,8 @@ namespace axon::risk {
 
 struct RiskRejection {
   // A fixed set, used as a metric label: kill_switch, rate, order_qty,
-  // order_notional, price_deviation, no_reference_price, position.
+  // order_notional, price_deviation, no_reference_price, position,
+  // exchange_down, self_trade.
   std::string code;
   // Human-readable, with the numbers that tripped it.
   std::string message;
@@ -70,6 +76,7 @@ enum class KillSource : std::uint8_t {
   kOperator,  // a direct call: an operator, a test, a future control command
   kSignal,    // SIGUSR1 / SIGUSR2
   kFile,      // cpp.risk.kill_switch_file
+  kLoss,      // cpp.risk.max_loss breached
 };
 
 const char* to_string(KillSource source) noexcept;
@@ -136,6 +143,38 @@ class RiskManager {
   const std::string& kill_switch_reason() const noexcept { return kill_reason_; }
   KillSource kill_switch_source() const noexcept { return kill_source_; }
 
+  // --- profit and loss -----------------------------------------------------------
+  //
+  // The session starts at engine start: fills before it are history, not
+  // PnL. At each UTC midnight a new session starts with whatever is held,
+  // valued from there. Time is wall-clock milliseconds, the clock fills are
+  // stamped with.
+  void start_pnl_session(std::int64_t wall_ms);
+  // Rolls the session over at 00:00 UTC. Call regularly.
+  void on_wall_clock(std::int64_t wall_ms);
+  // Engages the kill switch if PnL is below -max_loss. Once per session: an
+  // operator who releases it has seen the loss, and the switch does not
+  // re-engage on the next tick until the next session.
+  void check_loss(double now_seconds);
+
+  struct Pnl {
+    double total = 0.0;
+    // Instruments with a position but no fresh reference price, left out of
+    // `total` because they cannot be valued.
+    std::size_t unvalued = 0;
+  };
+  Pnl pnl(double now_seconds) const;
+
+  // --- exchange connectivity -------------------------------------------------------
+  //
+  // Whether the exchange's private feed is up. Down for longer than
+  // exchange_down_halt_seconds, new orders to that exchange are refused until
+  // it is back; cancels are not affected.
+  void observe_exchange_link(const std::string& exchange, bool feed_live, double now_seconds);
+  bool exchange_halted(const std::string& exchange) const {
+    return halted_.count(exchange) != 0;
+  }
+
   // --- reference prices ---------------------------------------------------------
   //
   // The instruments whose reference price is refreshed over REST: every
@@ -172,6 +211,16 @@ class RiskManager {
     std::string instrument;
     models::OrderSide side = models::OrderSide::kBuy;
     core::Qty remaining;
+    // Where it rests. Absent for a market order, which never rests.
+    std::optional<core::Price> price;
+  };
+  // One instrument's PnL this session.
+  struct PnlBook {
+    double cash = 0.0;      // from fills: sells add, buys subtract, fees subtract
+    double fill_qty = 0.0;  // signed quantity filled this session
+    // The reference price when the session started, or the first one after:
+    // what the position held at the start is valued from.
+    std::optional<double> start_mark;
   };
   struct Reference {
     core::Price price;
@@ -187,9 +236,15 @@ class RiskManager {
   std::optional<RiskRejection> check(const std::string& exchange,
                                      const std::string& instrument, models::OrderSide side,
                                      models::OrderType type, core::Qty quantity,
-                                     std::optional<core::Price> price,
+                                     std::optional<core::Price> price, bool post_only,
                                      const std::string& strategy, bool count_rate,
                                      const std::string& replacing_key, double now);
+  std::optional<RiskRejection> check_self_trade(const std::string& exchange,
+                                                const std::string& instrument,
+                                                models::OrderSide side,
+                                                std::optional<core::Price> limit_price,
+                                                double now) const;
+  bool pnl_tracked(const std::string& exchange) const;
   std::optional<core::Price> fresh_reference(const std::string& exchange,
                                              const std::string& instrument,
                                              double now) const;
@@ -207,6 +262,14 @@ class RiskManager {
   std::unordered_map<std::string, WorkingOrder> working_;       // order_key
   std::unordered_map<std::string, Reference> references_;       // exchange:instrument
   std::unordered_map<std::string, std::deque<double>> sends_;   // strategy -> send times
+
+  std::unordered_map<std::string, PnlBook> pnl_;                // exchange:instrument
+  std::int64_t pnl_session_start_ms_ = 0;
+  std::int64_t pnl_day_ = -1;  // UTC day number of the current session
+  bool loss_tripped_ = false;  // this session
+
+  std::unordered_map<std::string, double> down_since_;  // exchange -> when its feed went down
+  std::unordered_map<std::string, std::string> halted_;  // exchange -> why
 };
 
 }  // namespace axon::risk
