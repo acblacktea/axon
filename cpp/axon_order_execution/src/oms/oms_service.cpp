@@ -122,7 +122,7 @@ void OmsService::on_fill(const std::string& exchange, const transport::FillMsg& 
   // Tell the reconciler this trade arrived normally, so its next pass does not
   // "recover" it and count it twice.
   if (const auto it = reconcilers_.find(exchange); it != reconcilers_.end()) {
-    it->second->note_fill(fill.trade_id);
+    it->second->note_fill(fill.trade_id, fill.timestamp.millis());
   }
   // Deduplicate BEFORE publishing. A trade a strategy has acted on must not
   // reach it twice; that guarantee is what lets the feed and the reconciler

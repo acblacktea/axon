@@ -23,11 +23,13 @@
 #pragma once
 
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "axon/config.h"
@@ -64,8 +66,16 @@ class Reconciler {
   // Trade ids already seen, so a recovered fill is not double-counted. The
   // exchange's trade_id is the idempotency key; this is the same dedup the fill
   // repository does, kept in memory so the check costs nothing.
+  //
+  // Only ids a later pass could still return are kept: a pass pulls from the
+  // cursor less the overlap, so a fill traded before that can never come back,
+  // and its id is forgotten when the cursor moves. Without that the set grows
+  // by one entry per fill for as long as the engine runs.
   bool have_seen_fill(const std::string& trade_id) const;
-  void note_fill(const std::string& trade_id);
+  // `traded_at_ms` is the exchange's trade time; 0 when unknown, in which case
+  // the time it was noted is used.
+  void note_fill(const std::string& trade_id, std::int64_t traded_at_ms);
+  std::size_t remembered_fills() const noexcept { return seen_fills_.size(); }
 
   struct Stats {
     std::uint64_t order_passes = 0;
@@ -118,6 +128,12 @@ class Reconciler {
   // signed request at once -- which is how an IP gets rate-limit banned.
   static constexpr std::size_t kMaxOrderLookupsPerPass = 20;
   bool fill_pass_in_flight_ = false;
+  // A fill pass fans out one trades call per configured currency, like the
+  // order pass. It is over only when every reply is in, and the cursor moves
+  // only if none failed: moving it past a currency whose pull failed would
+  // put that currency's missed fills behind the cursor for good.
+  std::size_t fill_replies_outstanding_ = 0;
+  bool fill_pass_failed_ = false;
   bool position_pass_in_flight_ = false;
 
   // A position pass fans out one REST call per configured currency and the
@@ -132,6 +148,12 @@ class Reconciler {
   // so a trade stamped slightly out of order at the boundary is not missed.
   std::int64_t fill_cursor_ms_ = 0;
   std::unordered_set<std::string> seen_fills_;
+  // The same ids in the order they were noted, with their trade time, for
+  // forgetting the old ones. Arrival order is close to trade order but not
+  // exactly it; an id is only ever dropped once its own time is past the
+  // cutoff, so a late one waits behind its neighbours rather than going early.
+  std::deque<std::pair<std::int64_t, std::string>> seen_fill_times_;
+  void forget_fills_before(std::int64_t cutoff_ms);
 
   Stats stats_;
 };

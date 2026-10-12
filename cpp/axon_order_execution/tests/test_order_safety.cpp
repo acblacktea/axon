@@ -365,8 +365,25 @@ class ScriptedRest : public axon::oms::ExchangeRest {
   }
   void get_ticker(const std::string&, TickerCallback cb) override { cb(std::nullopt, "n/a"); }
   void get_positions(const std::string&, PositionsCallback cb) override { cb({}, {}); }
-  void get_user_trades(const std::string&, std::int64_t, std::int64_t, FillsCallback cb) override {
-    cb({}, {});
+  // Fills: per currency, optionally failing, optionally held like open orders.
+  std::map<std::string, std::vector<axon::models::Fill>> trades_by_currency;
+  std::map<std::string, std::string> trade_errors;  // currency -> error
+  bool hold_trades = false;
+  std::vector<std::function<void()>> held_trades;
+  std::vector<std::int64_t> trade_starts;  // the start_ms of every trades call
+
+  void get_user_trades(const std::string& currency, std::int64_t start_ms, std::int64_t,
+                       FillsCallback cb) override {
+    trade_starts.push_back(start_ms);
+    auto fire = [this, currency, cb] {
+      const auto err = trade_errors.count(currency) ? trade_errors[currency] : std::string();
+      cb(err.empty() ? trades_by_currency[currency] : std::vector<axon::models::Fill>{}, err);
+    };
+    if (hold_trades) {
+      held_trades.push_back(fire);
+    } else {
+      fire();
+    }
   }
   const std::string& exchange_name() const override { return name_; }
 
@@ -418,6 +435,116 @@ class ReconcilerTest : public ::testing::Test {
   ScriptedRest rest;
   std::unique_ptr<axon::oms::Reconciler> reconciler;
 };
+
+// ---------------------------------------------------------------------------
+// Fill reconciliation over several currencies
+// ---------------------------------------------------------------------------
+
+struct FillPass {
+  axon::oms::OrderStore store;
+  ScriptedRest rest;
+  std::vector<std::string> recovered;
+  std::unique_ptr<axon::oms::Reconciler> reconciler;
+
+  FillPass() {
+    Config config;
+    config.reconciliation.enabled = false;
+    config.reconciliation.after_live_settle_seconds = 0;
+    config.fill_reconciliation.enabled = true;
+    config.portfolio.currencies = {"BTCUSDT", "ETHUSDT"};
+    ExchangeConfig ex;
+    ex.name = "binance";
+    axon::oms::ReconcilerCallbacks cb;
+    cb.on_recovered_fill = [this](const axon::models::Fill& f) { recovered.push_back(f.trade_id); };
+    reconciler = std::make_unique<axon::oms::Reconciler>(config, ex, &rest, &store, cb);
+  }
+  // Runs a pass now, whatever the timers say -- unless one is still in flight.
+  void pass() {
+    reconciler->on_session_live();
+    reconciler->poll();
+  }
+};
+
+axon::models::Fill trade(const char* id) {
+  axon::models::Fill f;
+  f.trade_id = id;
+  f.exchange = "binance";
+  f.instrument = "ETHUSDT";
+  return f;
+}
+
+// The cursor used to move as soon as ANY currency's pull succeeded. With the
+// other one failing, its missed fills fell behind the cursor and no later
+// pass ever asked for them again.
+TEST(FillReconciliation, AFailedCurrencyKeepsTheCursorWhereItWas) {
+  FillPass p;
+  p.rest.trade_errors["ETHUSDT"] = "HTTP 502";
+  p.pass();
+  ASSERT_EQ(p.rest.trade_starts.size(), 2u);
+  const auto first_start = p.rest.trade_starts[0];
+
+  // The ETH pull works this time, and brings the fill the feed missed.
+  p.rest.trade_errors.clear();
+  p.rest.trades_by_currency["ETHUSDT"] = {trade("T1")};
+  p.pass();
+  ASSERT_EQ(p.rest.trade_starts.size(), 4u);
+  EXPECT_EQ(p.rest.trade_starts[2], first_start) << "the window must be pulled again";
+  EXPECT_EQ(p.rest.trade_starts[3], first_start);
+  EXPECT_EQ(p.recovered, std::vector<std::string>{"T1"});
+
+  // A clean pass moves it on.
+  p.pass();
+  ASSERT_EQ(p.rest.trade_starts.size(), 6u);
+  EXPECT_GT(p.rest.trade_starts[4], first_start);
+  EXPECT_EQ(p.recovered.size(), 1u) << "T1 again is a duplicate, not a second recovery";
+}
+
+// The in-flight flag used to clear on the FIRST reply, so a new pass could
+// start while the previous one's other replies were still on their way.
+TEST(FillReconciliation, NoNewPassUntilEveryReplyIsIn) {
+  FillPass p;
+  p.rest.hold_trades = true;
+  p.pass();
+  ASSERT_EQ(p.rest.held_trades.size(), 2u);
+
+  p.rest.held_trades[0]();
+  p.pass();
+  EXPECT_EQ(p.rest.trade_starts.size(), 2u) << "one reply is still outstanding";
+
+  p.rest.held_trades[1]();
+  p.pass();
+  EXPECT_EQ(p.rest.trade_starts.size(), 4u);
+}
+
+// The trade ids kept for deduplication used to grow by one per fill for the
+// life of the process. Now an id goes once the cursor has moved past it: no
+// later pass pulls from that far back, so it can never be returned again.
+TEST(FillReconciliation, IdsThePassesCanNoLongerReturnAreForgotten) {
+  FillPass p;
+  const std::int64_t now_ms = axon::core::wall_clock_ns() / 1'000'000LL;
+  p.reconciler->note_fill("OLD", now_ms - 10 * 60'000);  // ten minutes ago
+  p.reconciler->note_fill("RECENT", now_ms - 10'000);    // inside the 30s overlap
+  p.reconciler->note_fill("UNDATED", 0);                 // no trade time on it
+  ASSERT_EQ(p.reconciler->remembered_fills(), 3u);
+
+  p.pass();  // succeeds: the cursor moves to now, the next pass starts 30s back
+
+  EXPECT_FALSE(p.reconciler->have_seen_fill("OLD"));
+  EXPECT_TRUE(p.reconciler->have_seen_fill("RECENT")) << "the next pass can still return it";
+  EXPECT_TRUE(p.reconciler->have_seen_fill("UNDATED")) << "unknown time is kept, not guessed old";
+  EXPECT_EQ(p.reconciler->remembered_fills(), 2u);
+}
+
+// A failed pass does not move the cursor, so it must not forget anything the
+// repeated window will return.
+TEST(FillReconciliation, AFailedPassForgetsNothing) {
+  FillPass p;
+  const std::int64_t now_ms = axon::core::wall_clock_ns() / 1'000'000LL;
+  p.reconciler->note_fill("OLD", now_ms - 10 * 60'000);
+  p.rest.trade_errors["ETHUSDT"] = "HTTP 502";
+  p.pass();
+  EXPECT_TRUE(p.reconciler->have_seen_fill("OLD"));
+}
 
 // Binance's user data stream delivers nothing for a moment after it opens. An
 // order placed in that window is seen by neither the feed nor the pass run the

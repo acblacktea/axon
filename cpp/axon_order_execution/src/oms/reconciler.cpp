@@ -45,8 +45,23 @@ bool Reconciler::have_seen_fill(const std::string& trade_id) const {
   return seen_fills_.count(trade_id) > 0;
 }
 
-void Reconciler::note_fill(const std::string& trade_id) {
-  seen_fills_.insert(trade_id);
+void Reconciler::note_fill(const std::string& trade_id, std::int64_t traded_at_ms) {
+  if (!seen_fills_.insert(trade_id).second) {
+    return;
+  }
+  // Unknown trade time: "now" keeps the id for at least one more pass, which
+  // is the safe side -- dropping it early would let the next pass count the
+  // same fill as recovered.
+  const std::int64_t at =
+      traded_at_ms > 0 ? traded_at_ms : core::wall_clock_ns() / 1'000'000LL;
+  seen_fill_times_.emplace_back(at, trade_id);
+}
+
+void Reconciler::forget_fills_before(std::int64_t cutoff_ms) {
+  while (!seen_fill_times_.empty() && seen_fill_times_.front().first < cutoff_ms) {
+    seen_fills_.erase(seen_fill_times_.front().second);
+    seen_fill_times_.pop_front();
+  }
 }
 
 void Reconciler::on_session_live() {
@@ -196,6 +211,14 @@ void Reconciler::run_fill_pass() {
   fill_pass_in_flight_ = true;
   ++stats_.fill_passes;
 
+  const auto& currencies = config_.portfolio.currencies;
+  if (currencies.empty()) {
+    fill_pass_in_flight_ = false;
+    return;
+  }
+  fill_replies_outstanding_ = currencies.size();
+  fill_pass_failed_ = false;
+
   const std::int64_t now_ms = core::wall_clock_ns() / 1'000'000LL;
   // Re-fetch a little before the cursor: a trade stamped slightly out of order
   // at the boundary would otherwise fall through the gap between two pulls.
@@ -203,42 +226,56 @@ void Reconciler::run_fill_pass() {
       fill_cursor_ms_ -
       static_cast<std::int64_t>(config_.fill_reconciliation.overlap_seconds) * 1000LL;
 
-  for (const auto& currency : config_.portfolio.currencies) {
+  for (const auto& currency : currencies) {
     rest_->get_user_trades(
         currency, start, now_ms,
         [this, now_ms](std::vector<models::Fill> fills, const std::string& error) {
-          fill_pass_in_flight_ = false;
           if (!error.empty()) {
+            fill_pass_failed_ = true;
             ++stats_.failures;
             util::get_metrics().inc_reconciler_failure("fill", exchange_.name);
             AXON_LOG_WARN(log(), "[{}] fill reconciliation failed: {}",
                             exchange_.name, error);
-            return;
+          } else {
+            std::size_t recovered = 0;
+            for (auto& fill : fills) {
+              // trade_id is the exchange's idempotency key: the same fill
+              // arrives on the feed AND here, and counting it twice would
+              // double the position.
+              if (have_seen_fill(fill.trade_id)) {
+                continue;
+              }
+              note_fill(fill.trade_id, fill.timestamp.millis());
+              ++recovered;
+              if (callbacks_.on_recovered_fill) {
+                callbacks_.on_recovered_fill(fill);
+              }
+            }
+            if (recovered > 0) {
+              // Loud: a recovered fill means the WebSocket feed dropped one.
+              stats_.fills_recovered += recovered;
+              util::get_metrics().inc_reconciler_recovered("fill", exchange_.name);
+              AXON_LOG_WARN(log(),
+                              "[{}] recovered {} fill(s) the feed did not deliver",
+                              exchange_.name, recovered);
+            }
           }
 
-          std::size_t recovered = 0;
-          for (auto& fill : fills) {
-            // trade_id is the exchange's idempotency key: the same fill arrives
-            // on the feed AND here, and counting it twice would double the
-            // position.
-            if (have_seen_fill(fill.trade_id)) {
-              continue;
-            }
-            note_fill(fill.trade_id);
-            ++recovered;
-            if (callbacks_.on_recovered_fill) {
-              callbacks_.on_recovered_fill(fill);
-            }
+          if (--fill_replies_outstanding_ > 0) {
+            return;
           }
-          if (recovered > 0) {
-            // Loud: a recovered fill means the WebSocket feed dropped one.
-            stats_.fills_recovered += recovered;
-            util::get_metrics().inc_reconciler_recovered("fill", exchange_.name);
-            AXON_LOG_WARN(log(),
-                            "[{}] recovered {} fill(s) the feed did not deliver",
-                            exchange_.name, recovered);
+          fill_pass_in_flight_ = false;
+          // Only a pass that covered every currency moves the cursor. After a
+          // failure the next pass pulls the same window again; the fills that
+          // did arrive this time are deduplicated by trade_id.
+          if (!fill_pass_failed_) {
+            fill_cursor_ms_ = now_ms;
+            // The next pass starts here, less the overlap; nothing traded
+            // before that can come back from it.
+            forget_fills_before(fill_cursor_ms_ - static_cast<std::int64_t>(
+                                                      config_.fill_reconciliation.overlap_seconds) *
+                                                      1000LL);
           }
-          fill_cursor_ms_ = now_ms;
         });
   }
 }
